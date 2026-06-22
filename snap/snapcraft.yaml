@@ -1,0 +1,68 @@
+name: home-assistant
+title: Home Assistant
+version: '0.1.0'
+summary: Home Assistant (Container) managed via the Docker snap
+description: |
+  Runs the official Home Assistant container image
+  (ghcr.io/home-assistant/home-assistant) using the Docker snap.
+
+  Requires the docker snap (installed automatically on first install). After
+  installing, connect the interfaces:
+
+    snap connect home-assistant:docker docker:docker-daemon
+    snap connect home-assistant:docker-executables docker:docker-executables
+
+  Configure, e.g.:
+
+    snap set home-assistant docker.timezone=Europe/Oslo
+    snap set home-assistant docker.devices.zigbee=/dev/serial/by-id/...
+    snap set home-assistant docker.config-dir=/home/<user>/home-assistant   # opt-in bind mount
+
+base: core24
+confinement: strict
+grade: stable
+
+platforms:
+  amd64:
+  arm64:
+
+plugs:
+  docker:
+    interface: docker
+  docker-executables:
+    interface: content
+    content: docker-executables
+    target: $SNAP/docker-snap
+    default-provider: docker
+
+apps:
+  daemon:
+    command: bin/launcher daemon
+    daemon: simple
+    restart-condition: always
+    plugs: [docker]
+  reconcile:
+    command: bin/launcher reconcile
+    plugs: [docker]
+  update:
+    command: bin/launcher update
+    plugs: [docker]
+  backup:
+    command: bin/launcher backup
+    plugs: [docker]
+  rollback:
+    command: bin/launcher rollback
+    plugs: [docker]
+  check-config:
+    command: bin/launcher check-config
+    plugs: [docker]
+  cli:
+    command: bin/launcher cli
+    plugs: [docker]
+
+parts:
+  launcher:
+    plugin: go
+    source: .
+    build-snaps:
+      - go
