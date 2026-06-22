@@ -34,3 +34,28 @@ func TestParseOverrides(t *testing.T) {
 		t.Errorf("overrides wrong: %+v", c)
 	}
 }
+
+func TestValidateWarnsOnNonHostNetwork(t *testing.T) {
+	c, _ := Parse([]byte(`{"docker":{"network":"bridge"}}`))
+	warnings, err := c.Validate()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for non-host network")
+	}
+}
+
+func TestValidateRejectsBadInputs(t *testing.T) {
+	bad := []string{
+		`{"docker":{"devices":{"z":"ttyUSB0"}}}`,
+		`{"docker":{"volumes":{"m":"/mnt/media"}}}`,
+		`{"docker":{"config-dir":"relative/path"}}`,
+	}
+	for _, in := range bad {
+		c, _ := Parse([]byte(in))
+		if _, err := c.Validate(); err == nil {
+			t.Errorf("expected error for %s", in)
+		}
+	}
+}

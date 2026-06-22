@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Config is the resolved launcher configuration with defaults applied.
@@ -82,4 +83,29 @@ func boolOrDefault(v *bool, def bool) bool {
 		return def
 	}
 	return *v
+}
+
+// Validate returns non-fatal warnings and a fatal error if the config is unusable.
+func (c Config) Validate() (warnings []string, err error) {
+	if c.Network != "host" {
+		warnings = append(warnings, fmt.Sprintf(
+			"docker.network=%q: device discovery and Bluetooth need host networking; prefer docker.network=host", c.Network))
+	}
+	if !c.Privileged {
+		warnings = append(warnings, "docker.privileged=false: USB/Bluetooth passthrough may not work without privileged mode")
+	}
+	for name, dev := range c.Devices {
+		if !strings.HasPrefix(dev, "/dev/") {
+			return warnings, fmt.Errorf("docker.devices.%s=%q: device path must start with /dev/", name, dev)
+		}
+	}
+	for name, vol := range c.Volumes {
+		if !strings.Contains(vol, ":") {
+			return warnings, fmt.Errorf("docker.volumes.%s=%q: volume must be host:container", name, vol)
+		}
+	}
+	if c.ConfigDir != "" && !strings.HasPrefix(c.ConfigDir, "/") {
+		return warnings, fmt.Errorf("docker.config-dir=%q: must be an absolute path", c.ConfigDir)
+	}
+	return warnings, nil
 }
