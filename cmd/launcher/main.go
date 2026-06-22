@@ -1,0 +1,153 @@
+// cmd/launcher/main.go
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/giaever-online-iot/home-assistant/internal/backup"
+	"github.com/giaever-online-iot/home-assistant/internal/config"
+	"github.com/giaever-online-iot/home-assistant/internal/docker"
+	"github.com/giaever-online-iot/home-assistant/internal/dockerargs"
+	"github.com/giaever-online-iot/home-assistant/internal/reconcile"
+)
+
+func dockerBin() string { return filepath.Join(os.Getenv("SNAP"), "docker-snap", "docker") }
+
+func loadConfig() (config.Config, error) {
+	out, err := exec.Command("snapctl", "get", "-d").Output()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("reading snap config: %w", err)
+	}
+	return config.Parse(out)
+}
+
+func snapctlSet(key, value string) error {
+	return exec.Command("snapctl", "set", key+"="+value).Run()
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli>")
+		os.Exit(2)
+	}
+	if err := run(os.Args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func run(cmd string) error {
+	cli := docker.New(dockerBin())
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "daemon":
+		return runDaemon(cli, cfg)
+	case "reconcile":
+		return applyReconcile(cli, cfg, false)
+	case "update":
+		if _, err := snapshot(cli, cfg, "pre-update"); err != nil {
+			return err
+		}
+		if err := cli.Pull(dockerargs.ImageRef(cfg)); err != nil {
+			return err
+		}
+		return applyReconcile(cli, cfg, true)
+	case "backup":
+		name, err := snapshot(cli, cfg, "manual")
+		if err == nil {
+			fmt.Println("snapshot:", name)
+		}
+		return err
+	case "rollback":
+		return runRollback(cli, cfg)
+	case "check-config":
+		return cli.Exec(dockerargs.ContainerName, "python", "-m", "homeassistant", "--script", "check_config", "--config", "/config")
+	case "cli":
+		return cli.Exec(dockerargs.ContainerName, "/bin/bash")
+	default:
+		return fmt.Errorf("unknown command %q", cmd)
+	}
+}
+
+func applyReconcile(cli *docker.Client, cfg config.Config, force bool) error {
+	warnings, err := cfg.Validate()
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	if err != nil {
+		return err
+	}
+	action, err := reconcile.Reconcile(cli, cfg, force)
+	if err != nil {
+		return err
+	}
+	fmt.Println("reconcile:", action)
+	return nil
+}
+
+// snapshot tars the current config and records the running image digest.
+func snapshot(cli *docker.Client, cfg config.Config, prefix string) (string, error) {
+	src := dockerargs.ConfigSource(cfg)
+	image := dockerargs.ImageRef(cfg)
+	digest, _ := cli.ImageDigest(dockerargs.ContainerName) // best-effort
+	name := prefix + "-" + time.Now().Format("20060102-150405")
+	if err := cli.Run(backup.SnapshotArgs(src, image, name, digest)); err != nil {
+		return "", fmt.Errorf("snapshot: %w", err)
+	}
+	return name, nil
+}
+
+func runRollback(cli *docker.Client, cfg config.Config) error {
+	image := dockerargs.ImageRef(cfg)
+	lsout, err := cli.Capture(backup.ListArgs(image))
+	if err != nil {
+		return err
+	}
+	name := backup.ParseLatest(lsout)
+	if name == "" {
+		return fmt.Errorf("no snapshots found to roll back to")
+	}
+	meta, _ := cli.Capture(backup.ReadMetaArgs(image, name))
+	digest := strings.TrimSpace(meta)
+
+	if err := cli.Remove(dockerargs.ContainerName); err != nil {
+		return err
+	}
+	if err := cli.Run(backup.RestoreArgs(dockerargs.ConfigSource(cfg), image, name)); err != nil {
+		return err
+	}
+	if digest != "" {
+		if err := snapctlSet("image.digest", digest); err != nil {
+			return err
+		}
+		cfg.ImageDigest = digest
+	} else {
+		fmt.Fprintln(os.Stderr, "warning: snapshot has no recorded image digest; restoring config without pinning the image")
+	}
+	fmt.Println("rolled back to:", name)
+	return applyReconcile(cli, cfg, true)
+}
+
+func runDaemon(cli *docker.Client, cfg config.Config) error {
+	if err := applyReconcile(cli, cfg, false); err != nil {
+		return err
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigs
+		_ = cli.Stop(dockerargs.ContainerName)
+		os.Exit(0)
+	}()
+	return cli.FollowLogs(dockerargs.ContainerName)
+}
