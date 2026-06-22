@@ -32,9 +32,27 @@ func snapctlSet(key, value string) error {
 	return exec.Command("snapctl", "set", key+"="+value).Run()
 }
 
+// dockerNotConnected prints an actionable message when the docker CLI is absent
+// and exits non-zero. It is called before any subcommand that requires docker.
+func dockerNotConnected() {
+	fmt.Fprintln(os.Stderr, "Docker is not available to this snap. Install Docker and connect the interfaces:")
+	fmt.Fprintln(os.Stderr, "  sudo snap install docker")
+	fmt.Fprintln(os.Stderr, "  sudo snap connect home-assistant:docker docker:docker-daemon")
+	fmt.Fprintln(os.Stderr, "  sudo snap connect home-assistant:docker-executables docker:docker-executables")
+	os.Exit(1)
+}
+
+// requireDocker exits with an actionable message if the docker CLI binary is
+// not reachable. Must be called before any subcommand that invokes docker.
+func requireDocker() {
+	if _, err := os.Stat(dockerBin()); err != nil {
+		dockerNotConnected()
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli>")
+		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|validate>")
 		os.Exit(2)
 	}
 	if err := run(os.Args[1]); err != nil {
@@ -44,11 +62,17 @@ func main() {
 }
 
 func run(cmd string) error {
-	cli := docker.New(dockerBin())
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// "validate" is docker-free: it only checks the snap config and exits.
+	if cmd == "validate" {
+		return runValidate(cfg)
+	}
+	// All other subcommands require the docker CLI to be connected.
+	requireDocker()
+	cli := docker.New(dockerBin())
 	switch cmd {
 	case "daemon":
 		return runDaemon(cli, cfg)
@@ -77,6 +101,20 @@ func run(cmd string) error {
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// runValidate loads the snap config, prints any warnings, and exits non-zero
+// on a fatal validation error. It does NOT invoke docker.
+func runValidate(cfg config.Config) error {
+	warnings, err := cfg.Validate()
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println("config ok")
+	return nil
 }
 
 func applyReconcile(cli *docker.Client, cfg config.Config, force bool) error {

@@ -36,11 +36,22 @@ func TestRestoreArgsWritable(t *testing.T) {
 }
 
 func TestParseLatest(t *testing.T) {
+	// same-prefix ordering: pre-update timestamps must still sort correctly
 	ls := "manual-20260601-090000.tar.gz\nmanual-20260601-090000.image\npre-update-20260622-100000.tar.gz\npre-update-20260622-100000.image\n"
 	if got := ParseLatest(ls); got != "pre-update-20260622-100000" {
-		t.Errorf("ParseLatest = %q", got)
+		t.Errorf("ParseLatest same-prefix = %q, want pre-update-20260622-100000", got)
 	}
 	if got := ParseLatest("nothing\n"); got != "" {
 		t.Errorf("ParseLatest empty = %q", got)
+	}
+}
+
+func TestParseLatestMixedPrefixes(t *testing.T) {
+	// regression: pre-update-* sorts after manual-* lexically ('m' < 'p'),
+	// so a naive full-name sort would wrongly pick the older pre-update
+	// snapshot when a newer manual snapshot exists.
+	ls := "pre-update-20260101-000000.tar.gz\npre-update-20260101-000000.image\nmanual-20260622-235959.tar.gz\nmanual-20260622-235959.image\n"
+	if got := ParseLatest(ls); got != "manual-20260622-235959" {
+		t.Errorf("ParseLatest mixed-prefix = %q, want manual-20260622-235959", got)
 	}
 }

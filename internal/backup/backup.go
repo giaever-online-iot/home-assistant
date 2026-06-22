@@ -3,7 +3,6 @@ package backup
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -60,19 +59,31 @@ func ReadMetaArgs(image, name string) []string {
 	}
 }
 
-// ParseLatest returns the newest snapshot base name (lexical sort works because
-// names embed a sortable YYYYMMDD-HHMMSS timestamp), or "" if none.
+// ParseLatest returns the snapshot base name whose embedded trailing timestamp
+// (YYYYMMDD-HHMMSS — the last 15 characters of the base name) is the most
+// recent, regardless of prefix. It returns "" when there are no .tar.gz
+// entries. Snapshots are written with two prefixes by the launcher:
+// "pre-update-<timestamp>" (from update) and "manual-<timestamp>" (from
+// backup); sorting by the full base name would incorrectly favour any
+// "pre-update-*" entry over a newer "manual-*" entry ('m' < 'p').
 func ParseLatest(lsOutput string) string {
-	var names []string
+	const tsLen = 15 // "YYYYMMDD-HHMMSS"
+	best := ""
+	bestTS := ""
 	for _, line := range strings.Split(lsOutput, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasSuffix(line, ".tar.gz") {
-			names = append(names, strings.TrimSuffix(line, ".tar.gz"))
+		if !strings.HasSuffix(line, ".tar.gz") {
+			continue
+		}
+		base := strings.TrimSuffix(line, ".tar.gz")
+		if len(base) < tsLen {
+			continue
+		}
+		ts := base[len(base)-tsLen:]
+		if ts > bestTS {
+			bestTS = ts
+			best = base
 		}
 	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	return names[len(names)-1]
+	return best
 }
