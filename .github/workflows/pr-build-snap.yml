@@ -1,0 +1,191 @@
+name: PR Build Snap
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    # Only the snap recipe and the Go sources affect the built artifact, so build +
+    # publish to latest/edge/<PR> ONLY when those change. Everything else (docs,
+    # LICENSE, .gitignore, .github/**, editor config) is intentionally excluded — a
+    # doc/config edit must not mint a store revision.
+    paths:
+      - 'snap/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SNAP_NAME: home-assistant
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # snapcraft remote-build refuses shallow clones ("Remote builds for
+          # shallow cloned git repos are not supported"), so fetch full history.
+          fetch-depth: 0
+
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      - name: Configure Launchpad credentials
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.local/share/snapcraft
+          # Trailing newline matters: `printf '%s'` alone drops it and Launchpad
+          # auth/push then fails. `%s\n` keeps printf's literal-safety AND the newline.
+          printf '%s\n' "${{ secrets.LAUNCHPAD_CREDENTIALS }}" > ~/.local/share/snapcraft/launchpad-credentials
+
+      - name: Resolve version / archs
+        id: meta
+        run: |
+          set -euo pipefail
+          V="$(yq '.version' snap/snapcraft.yaml)"
+          ARCHS="$(yq '.platforms | keys | join(",")' snap/snapcraft.yaml)"
+          # ── TRACK-SPECIFIC (disabled: per-version v<MM> tracks / track-creation "TCG" not set up) ──
+          # TRACK="$(.github/scripts/snap-release.sh version-to-track "$V")"
+          # echo "track=$TRACK" >> "$GITHUB_OUTPUT"
+          # ───────────────────────────────────────────────────────────────────────────────────────────
+          {
+            echo "version=$V"
+            echo "archs=$ARCHS"
+          } >> "$GITHUB_OUTPUT"
+
+      # Builds + fetches every arch, retrying when a transient network error
+      # truncates the artifact DOWNLOAD (the Launchpad build itself succeeds).
+      # Validates each .snap, drops truncated ones, and re-fetches via --recover
+      # (no rebuild). Writes steps.build.outputs.snaps=<valid-count>.
+      - name: Remote-build all archs (retry transient fetch failures)
+        id: build
+        run: .github/scripts/remote-build.sh "${{ steps.meta.outputs.archs }}"
+
+      # remote-build writes its detailed error only to a log file on the runner.
+      # Surface it when no snap built.
+      - name: Dump snapcraft log on build failure
+        id: sclog
+        if: ${{ always() && steps.build.outputs.snaps == '0' }}
+        run: |
+          shopt -s nullglob
+          logs=( ~/.local/state/snapcraft/log/*.log ~/.cache/snapcraft/log/*.log )
+          tail_file="${RUNNER_TEMP}/snapcraft-log-tail.txt"; : > "$tail_file"
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "(no snapcraft log files found)" | tee -a "$tail_file"
+          else
+            for f in "${logs[@]}"; do
+              echo "::group::${f}"
+              cat "$f"
+              echo "::endgroup::"
+              { echo "===== ${f} ====="; cat "$f"; } >> "$tail_file"
+            done
+          fi
+          # Keep only the last 50 KB for the PR comment (well under GitHub's ~65 KB limit).
+          tail -c 50000 "$tail_file" > "${tail_file}.cut" && mv "${tail_file}.cut" "$tail_file"
+          echo "tail_file=${tail_file}" >> "$GITHUB_OUTPUT"
+
+      # ── TRACK-SPECIFIC (disabled until per-version tracks + track-creation ("TCG" rail guard) are set up) ──
+      # Creating a v<MM> track has no snapcraft command — it needs the storefront session
+      # cookie (SNAPCRAFT_SESSION_COOKIE). Re-enable this together with the v<MM>/edge/<PR>
+      # upload channel below and the `track=` output in the meta step.
+      # - name: Ensure version track exists
+      #   if: ${{ steps.build.outputs.snaps != '0' && github.event_name == 'pull_request' }}
+      #   env:
+      #     SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+      #     SNAPCRAFT_SESSION_COOKIE: ${{ secrets.SNAPCRAFT_SESSION_COOKIE }}
+      #   run: |
+      #     set -euo pipefail
+      #     TRACK="${{ steps.meta.outputs.track }}"
+      #     if snapcraft tracks "$SNAP_NAME" | awk 'NR>1{print $1}' | grep -qx "$TRACK"; then
+      #       echo "Track $TRACK already exists."
+      #       exit 0
+      #     fi
+      #     bash .github/scripts/snap-create-track.sh "$SNAP_NAME" "$TRACK"
+      # ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+      - name: Upload built archs to latest/edge/<PR>
+        id: release
+        if: ${{ steps.build.outputs.snaps != '0' && github.event_name == 'pull_request' }}
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          set -uo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          # latest/* per-PR channel.
+          # TRACK-SPECIFIC alternative (disabled): CHAN="${{ steps.meta.outputs.track }}/edge/$PR"
+          CHAN="latest/edge/$PR"
+          IFS=',' read -ra WANT <<< "${{ steps.meta.outputs.archs }}"
+          uploaded=(); missing=()
+          for arch in "${WANT[@]}"; do
+            # Matches name_version_arch.snap (snapcraft 8.14+ / core26) — '*' also tolerates name_arch.snap.
+            f="$(ls -1 "${SNAP_NAME}"*"${arch}".snap 2>/dev/null | head -n1 || true)"
+            if [ -z "$f" ]; then echo "missing snap for $arch"; missing+=("$arch"); continue; fi
+            echo "Uploading $f -> $CHAN"
+            # Retry the store upload: it can drop mid-transfer on an otherwise-valid snap.
+            # Bounded, so a genuine rejection still fails.
+            if .github/scripts/retry.sh 3 15 -- snapcraft upload "$f" --release="$CHAN"; then uploaded+=("$arch"); else echo "upload failed for $arch"; missing+=("$arch"); fi
+          done
+          {
+            echo "channel=$CHAN"
+            echo "missing=${missing[*]:-}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "comment<<EOF"
+            if [ "${#uploaded[@]}" -gt 0 ]; then
+              printf '✅ Snap for this PR published to `%s`\n\n' "$CHAN"
+              printf '```bash\nsudo snap install %s --channel=%s   # or: sudo snap refresh %s --channel=%s\n```\n\n' "$SNAP_NAME" "$CHAN" "$SNAP_NAME" "$CHAN"
+              printf 'Built: %s\n' "${uploaded[*]}"
+            else
+              printf '❌ No architectures were published for this PR.\n'
+            fi
+            if [ "${#missing[@]}" -gt 0 ]; then printf '\n⚠️ Failed/missing arch(es): %s\n' "${missing[*]}"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sticky PR comment
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v9
+        env:
+          BODY: ${{ steps.release.outputs.comment }}
+          BUILT: ${{ steps.build.outputs.snaps }}
+          SCLOG_FILE: ${{ steps.sclog.outputs.tail_file }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- pr-build-snap -->';
+            const failed = (!process.env.BUILT || process.env.BUILT === '0' || !process.env.BODY);
+            let text = failed
+              ? '❌ Build produced no snaps (or a preceding step failed). Check the Action logs.'
+              : process.env.BODY;
+            // On failure, fold the captured snapcraft log (last 50 KB) into the comment.
+            if (failed && process.env.SCLOG_FILE && fs.existsSync(process.env.SCLOG_FILE)) {
+              const log = fs.readFileSync(process.env.SCLOG_FILE, 'utf8');
+              text += `\n\n<details>\n<summary>snapcraft log (last 50 KB)</summary>\n\n\`\`\`text\n${log}\n\`\`\`\n\n</details>`;
+            }
+            const body = `${marker}\n${text}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const issuesApi = (github.rest && github.rest.issues) ? github.rest.issues : github.issues;
+            const { data: comments } = await issuesApi.listComments({ owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await issuesApi.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await issuesApi.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Fail if build/upload incomplete
+        if: ${{ steps.build.outputs.snaps == '0' || steps.release.outputs.missing != '' }}
+        run: |
+          echo "::error::Incomplete: snaps=${{ steps.build.outputs.snaps }} missing=[${{ steps.release.outputs.missing }}]"
+          exit 1

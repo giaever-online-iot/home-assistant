@@ -1,0 +1,40 @@
+name: Lint & test
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'snap/**'
+      - 'go.mod'
+      - '.github/workflows/lint-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Reads the `go` directive from go.mod so CI tracks the pinned toolchain.
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Shellcheck the configure hook
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck snap/hooks/configure
