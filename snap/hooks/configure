@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+# Re-apply configuration by restarting the launcher daemon, which reconciles the
+# Home Assistant container to the (possibly changed) snap config. Reconcile is
+# idempotent: a spec-hash label means an unchanged config is a no-op.
+if snapctl services "${SNAP_INSTANCE_NAME}.daemon" >/dev/null 2>&1; then
+    snapctl restart "${SNAP_INSTANCE_NAME}.daemon"
+fi
