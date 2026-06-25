@@ -71,6 +71,24 @@ jobs:
         id: build
         run: .github/scripts/remote-build.sh "${{ steps.meta.outputs.archs }}"
 
+      # Per-arch Launchpad build logs (snapcraft-<recipe>_<arch>_<ts>.txt) are
+      # downloaded to the workspace by `snapcraft remote-build -v`. Surface them so a
+      # PARTIAL-arch failure (e.g. arm64 "Stopped" while amd64 succeeds) has a real,
+      # readable reason — the snapcraft-execution-log dump below only fires when ZERO
+      # archs build, which misses exactly this case.
+      - name: Dump per-arch remote-build logs
+        if: ${{ always() }}
+        run: |
+          shopt -s nullglob
+          found=0
+          for f in snapcraft-*.txt; do
+            found=1
+            echo "::group::${f}"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          [ "$found" = 0 ] && echo "(no per-arch remote-build .txt logs in workspace)" || true
+
       # remote-build writes its detailed error only to a log file on the runner.
       # Surface it when no snap built.
       - name: Dump snapcraft log on build failure
