@@ -26,12 +26,13 @@ concurrency:
 env:
   SNAP_NAME: home-assistant
 
-# Per-arch matrix pipeline: meta -> build[arch] -> upload[arch] -> report.
-# build and upload are matrix legs (fail-fast: false), so each arch builds and
-# publishes INDEPENDENTLY — a healthy amd64 reaches the store in ~10 min without
-# waiting on arm64's Launchpad queue, an arm64 "Stop" only reddens its own leg,
-# and GitHub's "Re-run failed jobs" retries just the dead arch (no rebuild of the
-# good one). report aggregates which arches actually published.
+# Per-arch matrix: meta -> build[arch] -> report.
+# Each `build` leg builds AND publishes its OWN arch (fail-fast: false), so amd64
+# reaches the store in ~10 min independent of arm64's Launchpad queue. A SEPARATE
+# upload job is deliberately avoided: `needs: build` waits for EVERY matrix leg, so
+# it would re-couple amd64's publish to the slowest arch. An arch's failure only
+# reddens its own leg; GitHub's "Re-run failed jobs" retries just that arch. The
+# `report` job aggregates which arches actually published into the sticky comment.
 jobs:
   meta:
     runs-on: ubuntu-latest
@@ -66,6 +67,8 @@ jobs:
       fail-fast: false          # a dead arch must not cancel its siblings
       matrix:
         arch: ${{ fromJSON(needs.meta.outputs.archs) }}
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -83,22 +86,40 @@ jobs:
       - name: Remote-build ${{ matrix.arch }} (retry transient fetch failures)
         id: build
         run: .github/scripts/remote-build.sh "${{ matrix.arch }}"
-      - name: Upload snap artifact
-        if: ${{ steps.build.outputs.snaps != '0' }}
+      - name: Publish ${{ matrix.arch }} to latest/edge/pr<PR>
+        id: publish
+        if: ${{ steps.build.outputs.snaps != '0' && github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          # "pr<N>" branch (>= 2 chars; the store rejects a bare single-digit branch
+          # like "1"). Keep in sync with release-on-merge.yml.
+          CHAN="latest/edge/pr$PR"
+          ARCH="${{ matrix.arch }}"
+          f="$(ls -1 "${SNAP_NAME}"*"${ARCH}".snap 2>/dev/null | head -n1 || true)"
+          if [ -z "$f" ]; then echo "::error::remote-build reported a snap but none is on disk for ${ARCH}"; exit 1; fi
+          echo "Uploading $f -> $CHAN"
+          # Bounded retry: the store upload can drop mid-transfer on a valid snap.
+          .github/scripts/retry.sh 3 15 -- snapcraft upload "$f" --release="$CHAN"
+          # Marker (only reached on a successful upload) tells the report job this arch published.
+          mkdir -p out && touch "out/uploaded-${ARCH}"
+      - name: Upload published marker
+        if: ${{ steps.publish.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: snap-${{ matrix.arch }}
-          path: ${{ env.SNAP_NAME }}*${{ matrix.arch }}.snap
+          name: uploaded-${{ matrix.arch }}
+          path: out/uploaded-${{ matrix.arch }}
           retention-days: 7
           if-no-files-found: error
-      # On a failed leg, surface the per-arch Launchpad build log (compile/pack
+      # On a build failure, surface the per-arch Launchpad build log (compile/pack
       # output) + snapcraft's runner log as an artifact the report job folds into
-      # the PR comment. Only fires when this leg built nothing.
+      # the PR comment.
       - name: Capture build logs on failure
         if: ${{ always() && steps.build.outputs.snaps == '0' }}
         run: |
           shopt -s nullglob
-          out="${RUNNER_TEMP}/buildlog-${{ matrix.arch }}.txt"; : > "$out"
+          out="${RUNNER_TEMP}/buildlog-${{ matrix.arch }}.txt"
+          : > "$out"
           for f in snapcraft-*.txt "$HOME"/.local/state/snapcraft/log/*.log "$HOME"/.cache/snapcraft/log/*.log; do
             { echo "===== $f ====="; cat "$f"; } >> "$out"
           done
@@ -115,60 +136,8 @@ jobs:
           if-no-files-found: ignore
           overwrite: true   # "Re-run failed jobs" replaces this leg's prior log
 
-  upload:
-    needs: [meta, build]
-    # Run even though a sibling arch's build failed (!cancelled); only for PRs
-    # (the channel is keyed on the PR number).
-    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: ${{ fromJSON(needs.meta.outputs.archs) }}
-    env:
-      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install snapcraft
-        run: sudo snap install snapcraft --classic
-      - name: Download snap artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: snap-${{ matrix.arch }}
-          path: .
-        continue-on-error: true   # missing => this arch's build failed; handled below
-      - name: Upload ${{ matrix.arch }} to latest/edge/pr<PR>
-        run: |
-          set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
-          # "pr<N>" branch (>= 2 chars; the store rejects a bare single-digit branch
-          # like "1"). Keep in sync with release-on-merge.yml.
-          CHAN="latest/edge/pr$PR"
-          ARCH="${{ matrix.arch }}"
-          f="$(ls -1 "${SNAP_NAME}"*"${ARCH}".snap 2>/dev/null | head -n1 || true)"
-          # FAIL (not no-op) when the artifact is missing, so "Re-run failed jobs"
-          # re-pairs a rebuilt arch with its upload instead of silently skipping it.
-          if [ -z "$f" ]; then
-            echo "::error::No snap artifact for ${ARCH} — its build did not succeed."
-            exit 1
-          fi
-          echo "Uploading $f -> $CHAN"
-          # Bounded retry: the store upload can drop mid-transfer on a valid snap.
-          .github/scripts/retry.sh 3 15 -- snapcraft upload "$f" --release="$CHAN"
-      - name: Mark published
-        if: ${{ success() }}
-        run: mkdir -p out && touch "out/uploaded-${{ matrix.arch }}"
-      - name: Upload published marker
-        if: ${{ success() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: uploaded-${{ matrix.arch }}
-          path: out/uploaded-${{ matrix.arch }}
-          retention-days: 7
-          if-no-files-found: error
-
   report:
-    needs: [meta, build, upload]
+    needs: [meta, build]
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
