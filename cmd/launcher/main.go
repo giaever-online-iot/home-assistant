@@ -173,7 +173,7 @@ func preflightContainer(cli *docker.Client, cfg config.Config) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|validate>")
+		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|install|validate>")
 		os.Exit(2)
 	}
 	if err := run(os.Args[1]); err != nil {
@@ -224,6 +224,11 @@ func run(cmd string) error {
 			return err
 		}
 		return cli.Exec(dockerargs.ContainerName, "/bin/bash")
+	case "install":
+		if err := preflightContainer(cli, cfg); err != nil {
+			return err
+		}
+		return runInstall(cli, os.Args[2:])
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}

@@ -18,6 +18,10 @@ description: |
     snap set home-assistant docker.devices.zigbee=/dev/serial/by-id/...
     snap set home-assistant docker.config-dir=/home/<user>/home-assistant   # opt-in bind mount
 
+  Install HACS (the Home Assistant Community Store):
+
+    home-assistant.install hacs
+
 license: Apache-2.0
 contact: https://github.com/giaever-online-iot/home-assistant/issues
 issues: https://github.com/giaever-online-iot/home-assistant/issues
@@ -64,6 +68,9 @@ apps:
     plugs: [docker]
   cli:
     command: bin/launcher cli
+    plugs: [docker]
+  install:
+    command: bin/launcher install
     plugs: [docker]
 
 parts:

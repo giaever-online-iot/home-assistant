@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 type Runner interface {
 	Output(args ...string) (string, error)
 	Stream(args ...string) error
+	Check(args ...string) (bool, error)
 }
 
 type execRunner struct{ bin string }
@@ -25,6 +27,19 @@ func (r execRunner) Stream(args ...string) error {
 	cmd := exec.Command(r.bin, args...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Run()
+}
+
+// Check runs the command for its exit status: (true,nil) on exit 0, (false,nil)
+// when it ran but exited non-zero, and an error only when docker couldn't run.
+func (r execRunner) Check(args ...string) (bool, error) {
+	if err := exec.Command(r.bin, args...).Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // Client wraps the docker operations the launcher needs.
@@ -90,6 +105,17 @@ func (c *Client) FollowLogs(name string) error {
 }
 func (c *Client) Exec(name string, cmd ...string) error {
 	return c.r.Stream(append([]string{"exec", name}, cmd...)...)
+}
+
+// Restart streams `docker restart <name>` — used by `install` to reload Home
+// Assistant so a freshly-installed integration is picked up.
+func (c *Client) Restart(name string) error { return c.r.Stream("restart", name) }
+
+// ExecCheck runs `docker exec <name> <cmd…>` for its exit status (e.g.
+// `test -d <path>`): (true,nil) on exit 0, (false,nil) on a non-zero exit, and
+// an error only when docker itself couldn't be run.
+func (c *Client) ExecCheck(name string, cmd ...string) (bool, error) {
+	return c.r.Check(append([]string{"exec", name}, cmd...)...)
 }
 
 const (
