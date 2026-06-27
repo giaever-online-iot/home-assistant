@@ -19,7 +19,12 @@ import (
 	"github.com/giaever-online-iot/home-assistant/internal/reconcile"
 )
 
-func dockerBin() string { return filepath.Join(os.Getenv("SNAP"), "docker-snap", "docker") }
+// The docker snap's docker-executables content slot exports its whole root
+// (read: [.]); the docker CLI is at bin/docker, so under our mount target
+// $SNAP/docker-snap it lands at $SNAP/docker-snap/bin/docker. It is statically
+// linked and talks to the daemon at /var/run/docker.sock (granted by the docker
+// interface), so no extra library/socket env is needed.
+func dockerBin() string { return filepath.Join(os.Getenv("SNAP"), "docker-snap", "bin", "docker") }
 
 func loadConfig() (config.Config, error) {
 	// snapctl needs explicit key(s): a bare `snapctl get -d` exits non-zero on a
