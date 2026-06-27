@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,11 +22,29 @@ import (
 func dockerBin() string { return filepath.Join(os.Getenv("SNAP"), "docker-snap", "docker") }
 
 func loadConfig() (config.Config, error) {
-	out, err := exec.Command("snapctl", "get", "-d").Output()
-	if err != nil {
-		return config.Config{}, fmt.Errorf("reading snap config: %w", err)
+	// snapctl needs explicit key(s): a bare `snapctl get -d` exits non-zero on a
+	// fresh install with no config set (seen on Ubuntu Core), which aborts the
+	// configure hook and rolls back the whole install. Query each config namespace
+	// and tolerate "unset" so an unconfigured install resolves to all-defaults.
+	merged := map[string]json.RawMessage{}
+	for _, ns := range []string{"image", "docker"} {
+		out, err := exec.Command("snapctl", "get", "-d", ns).Output()
+		if err != nil {
+			continue // namespace not set on this install → defaults apply
+		}
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(out, &doc); err != nil {
+			return config.Config{}, fmt.Errorf("parsing snap config %q: %w", ns, err)
+		}
+		for k, v := range doc {
+			merged[k] = v
+		}
 	}
-	return config.Parse(out)
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("encoding snap config: %w", err)
+	}
+	return config.Parse(data)
 }
 
 func snapctlSet(key, value string) error {
