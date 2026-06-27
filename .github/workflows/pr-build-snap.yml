@@ -139,9 +139,11 @@ jobs:
         run: |
           set -uo pipefail
           PR="${{ github.event.pull_request.number }}"
-          # latest/* per-PR channel.
-          # TRACK-SPECIFIC alternative (disabled): CHAN="${{ steps.meta.outputs.track }}/edge/$PR"
-          CHAN="latest/edge/$PR"
+          # latest/* per-PR channel. Branch component is "pr<N>", not bare "<N>": the store
+          # requires channel branch names >= 2 chars, so a single-digit PR (e.g. #1) is
+          # rejected as "Invalid branch name: 1". Keep in sync with release-on-merge.yml.
+          # TRACK-SPECIFIC alternative (disabled): CHAN="${{ steps.meta.outputs.track }}/edge/pr$PR"
+          CHAN="latest/edge/pr$PR"
           IFS=',' read -ra WANT <<< "${{ steps.meta.outputs.archs }}"
           uploaded=(); missing=()
           for arch in "${WANT[@]}"; do

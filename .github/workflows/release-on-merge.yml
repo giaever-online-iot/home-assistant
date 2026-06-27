@@ -59,11 +59,12 @@ jobs:
           SNAP="$SNAP_NAME"
           V="${{ steps.meta.outputs.version }}"
           PR="${{ steps.meta.outputs.pr }}"
-          BRANCH="latest/edge/$PR"
+          # "pr<N>" branch (>= 2 chars; store rejects a bare single-digit) — keep in sync with pr-build-snap.yml.
+          BRANCH="latest/edge/pr$PR"
 
           INFO="$(snapcraft status "$SNAP")"
 
-          if [ "$("$SR" branch-has-revisions latest "$PR" <<<"$INFO")" != "yes" ]; then
+          if [ "$("$SR" branch-has-revisions latest "pr$PR" <<<"$INFO")" != "yes" ]; then
             echo "::warning::release-on-merge: no revisions in $BRANCH to promote. If the build uploaded (see this PR's 'PR Build Snap' run), release them manually:"
             echo "  snapcraft promote $SNAP --from-channel $BRANCH --to-channel latest/candidate --yes   # if this is the newest release"
             echo "  snapcraft promote $SNAP --from-channel $BRANCH --to-channel latest/edge --yes"

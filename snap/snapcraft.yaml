@@ -18,6 +18,12 @@ description: |
     snap set home-assistant docker.devices.zigbee=/dev/serial/by-id/...
     snap set home-assistant docker.config-dir=/home/<user>/home-assistant   # opt-in bind mount
 
+license: Apache-2.0
+contact: https://github.com/giaever-online-iot/home-assistant/issues
+issues: https://github.com/giaever-online-iot/home-assistant/issues
+source-code: https://github.com/giaever-online-iot/home-assistant
+website: https://www.home-assistant.io
+
 base: core26
 confinement: strict
 grade: stable
