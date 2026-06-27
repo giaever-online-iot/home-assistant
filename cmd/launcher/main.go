@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/giaever-online-iot/home-assistant/internal/backup"
 	"github.com/giaever-online-iot/home-assistant/internal/config"
 	"github.com/giaever-online-iot/home-assistant/internal/docker"
@@ -56,22 +58,117 @@ func snapctlSet(key, value string) error {
 	return exec.Command("snapctl", "set", key+"="+value).Run()
 }
 
-// dockerNotConnected prints an actionable message when the docker CLI is absent
-// and exits non-zero. It is called before any subcommand that requires docker.
-func dockerNotConnected() {
-	fmt.Fprintln(os.Stderr, "Docker is not available to this snap. Install Docker and connect the interfaces:")
-	fmt.Fprintln(os.Stderr, "  sudo snap install docker")
-	fmt.Fprintln(os.Stderr, "  sudo snap connect home-assistant:docker docker:docker-daemon")
-	fmt.Fprintln(os.Stderr, "  sudo snap connect home-assistant:docker-executables docker:docker-executables")
+// dockerSteps returns the ordered remediation commands for whichever docker
+// prerequisites are missing, or nil when docker is fully available. It is pure
+// (no I/O) so it can be unit-tested. execConn/sockConn report whether the
+// docker-executables/docker interfaces are connected; binary reports whether the
+// docker CLI is present in the content mount (which implies docker-executables is
+// connected to an installed provider).
+func dockerSteps(execConn, sockConn, binary bool) []string {
+	if execConn && sockConn && binary {
+		return nil
+	}
+	var steps []string
+	// docker-executables provides the CLI; if it is unconnected AND the binary is
+	// absent, the docker snap (the content provider) is likely not installed.
+	if !execConn && !binary {
+		steps = append(steps, "sudo snap install docker")
+	}
+	if !execConn {
+		steps = append(steps, "sudo snap connect home-assistant:docker-executables docker:docker-executables")
+	}
+	if !sockConn {
+		steps = append(steps, "sudo snap connect home-assistant:docker docker:docker-daemon")
+	}
+	// Connected but the CLI is still missing → the provider snap looks broken.
+	if execConn && !binary {
+		steps = append(steps, "sudo snap install docker")
+	}
+	return steps
+}
+
+// snapctlIsConnected reports whether the named plug is connected, via
+// `snapctl is-connected <plug>` (exit 0 == connected). Works inside the snap.
+func snapctlIsConnected(plug string) bool {
+	return exec.Command("snapctl", "is-connected", plug).Run() == nil
+}
+
+func statOK(path string) bool { _, err := os.Stat(path); return err == nil }
+
+// stderrIsTTY reports whether stderr is a terminal, so guidance is styled for a
+// human at a prompt but stays plain text in the systemd journal.
+func stderrIsTTY() bool {
+	fi, _ := os.Stderr.Stat()
+	return fi != nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// renderGuidance formats a title plus ordered command steps: a lipgloss-styled
+// box when stderr is a terminal, plain indented text otherwise.
+func renderGuidance(title string, steps []string) string {
+	if !stderrIsTTY() {
+		var b strings.Builder
+		fmt.Fprintln(&b, title)
+		for _, s := range steps {
+			fmt.Fprintln(&b, "  "+s)
+		}
+		return b.String()
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("11")).
+		Padding(0, 1)
+	lines := []string{titleStyle.Render(title), ""}
+	for _, s := range steps {
+		lines = append(lines, cmdStyle.Render(s))
+	}
+	return box.Render(strings.Join(lines, "\n")) + "\n"
+}
+
+// requireDocker exits with targeted, dynamic guidance when docker is not fully
+// available to the snap — printing only the steps that are actually missing, and
+// nothing when docker is ready. Must be called before any subcommand that
+// invokes docker.
+func requireDocker() {
+	steps := dockerSteps(
+		snapctlIsConnected("docker-executables"),
+		snapctlIsConnected("docker"),
+		statOK(dockerBin()),
+	)
+	if steps == nil {
+		return
+	}
+	fmt.Fprint(os.Stderr, renderGuidance("Docker isn't ready for Home Assistant yet. Run:", steps))
 	os.Exit(1)
 }
 
-// requireDocker exits with an actionable message if the docker CLI binary is
-// not reachable. Must be called before any subcommand that invokes docker.
-func requireDocker() {
-	if _, err := os.Stat(dockerBin()); err != nil {
-		dockerNotConnected()
+// preflightContainer returns a clear error explaining which rung is missing
+// (docker ready → image present → container running) before a command execs into
+// the running container, instead of docker's raw "No such container: …".
+func preflightContainer(cli *docker.Client, cfg config.Config) error {
+	running, err := cli.Running(dockerargs.ContainerName)
+	if err != nil {
+		return err
 	}
+	if running {
+		return nil
+	}
+	exists, err := cli.Exists(dockerargs.ContainerName)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("Home Assistant is not running yet — it may still be starting; the daemon will bring it up. Try again shortly, or run `home-assistant.reconcile`")
+	}
+	present, err := cli.ImageExists(dockerargs.ImageRef(cfg))
+	if err != nil {
+		return err
+	}
+	if !present {
+		return fmt.Errorf("Home Assistant's image is still downloading — run `home-assistant.reconcile` to watch the progress, or wait for the daemon to finish")
+	}
+	return fmt.Errorf("Home Assistant's container hasn't been created yet — run `home-assistant.reconcile` (or wait for the daemon) to start it")
 }
 
 func main() {
@@ -106,9 +203,8 @@ func run(cmd string) error {
 		if _, err := snapshot(cli, cfg, "pre-update"); err != nil {
 			return err
 		}
-		if err := cli.Pull(dockerargs.ImageRef(cfg)); err != nil {
-			return err
-		}
+		// applyReconcile(force=true) pulls (streamed progress + bounded retry)
+		// before recreating the container, so no separate pull is needed here.
 		return applyReconcile(cli, cfg, true)
 	case "backup":
 		name, err := snapshot(cli, cfg, "manual")
@@ -119,8 +215,14 @@ func run(cmd string) error {
 	case "rollback":
 		return runRollback(cli, cfg)
 	case "check-config":
+		if err := preflightContainer(cli, cfg); err != nil {
+			return err
+		}
 		return cli.Exec(dockerargs.ContainerName, "python", "-m", "homeassistant", "--script", "check_config", "--config", "/config")
 	case "cli":
+		if err := preflightContainer(cli, cfg); err != nil {
+			return err
+		}
 		return cli.Exec(dockerargs.ContainerName, "/bin/bash")
 	default:
 		return fmt.Errorf("unknown command %q", cmd)

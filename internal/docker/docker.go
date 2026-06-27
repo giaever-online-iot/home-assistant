@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner executes docker commands; abstracted for testing.
@@ -80,11 +81,45 @@ func (c *Client) ImageDigest(name string) (string, error) {
 	return "", nil
 }
 
-func (c *Client) Pull(image string) error      { return c.r.Stream("pull", image) }
-func (c *Client) Remove(name string) error     { return c.r.Stream("rm", "-f", name) }
-func (c *Client) Start(name string) error      { return c.r.Stream("start", name) }
-func (c *Client) Stop(name string) error       { return c.r.Stream("stop", name) }
-func (c *Client) FollowLogs(name string) error { return c.r.Stream("logs", "-f", "--tail", "100", name) }
+func (c *Client) Pull(image string) error  { return c.pull(image, pullAttempts, pullBackoff) }
+func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", name) }
+func (c *Client) Start(name string) error  { return c.r.Stream("start", name) }
+func (c *Client) Stop(name string) error   { return c.r.Stream("stop", name) }
+func (c *Client) FollowLogs(name string) error {
+	return c.r.Stream("logs", "-f", "--tail", "100", name)
+}
 func (c *Client) Exec(name string, cmd ...string) error {
 	return c.r.Stream(append([]string{"exec", name}, cmd...)...)
+}
+
+const (
+	pullAttempts = 3
+	pullBackoff  = 3 * time.Second
+)
+
+// pull is Pull's testable core: it streams `docker pull` (per-layer progress)
+// and retries up to attempts times with backoff between tries, so a transient
+// registry/containerd hiccup self-heals instead of leaving the create wedged.
+// Already-downloaded layers are cached, so a retry resumes rather than restarts.
+func (c *Client) pull(image string, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 1; i <= attempts; i++ {
+		if err = c.r.Stream("pull", image); err == nil {
+			return nil
+		}
+		if i < attempts {
+			fmt.Fprintf(os.Stderr, "docker pull %s failed (attempt %d/%d): %v — retrying in %s\n", image, i, attempts, err, backoff)
+			time.Sleep(backoff)
+		}
+	}
+	return fmt.Errorf("docker pull %s failed after %d attempts: %w", image, attempts, err)
+}
+
+// ImageExists reports whether the given image reference is present locally
+// (used by the preflight ladder to tell "still downloading" from "not started").
+func (c *Client) ImageExists(image string) (bool, error) {
+	if _, err := c.r.Output("image", "inspect", image); err != nil {
+		return false, nil // `image inspect` fails when the image is absent
+	}
+	return true, nil
 }
