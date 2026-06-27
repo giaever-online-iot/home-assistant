@@ -1,0 +1,209 @@
+name: PR Build Snap
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    # Only the snap recipe and the Go sources affect the built artifact, so build +
+    # publish to latest/edge/pr<PR> ONLY when those change. Everything else (docs,
+    # LICENSE, .gitignore, .github/**, editor config) is intentionally excluded — a
+    # doc/config edit must not mint a store revision.
+    paths:
+      - 'snap/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SNAP_NAME: home-assistant
+
+# Per-arch matrix: meta -> build[arch] -> report.
+# Each `build` leg builds AND publishes its OWN arch (fail-fast: false), so amd64
+# reaches the store in ~10 min independent of arm64's Launchpad queue. A SEPARATE
+# upload job is deliberately avoided: `needs: build` waits for EVERY matrix leg, so
+# it would re-couple amd64's publish to the slowest arch. An arch's failure only
+# reddens its own leg; GitHub's "Re-run failed jobs" retries just that arch. The
+# `report` job aggregates which arches actually published into the sticky comment.
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      archs: ${{ steps.meta.outputs.archs }}
+      archs_csv: ${{ steps.meta.outputs.archs_csv }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve version / archs
+        id: meta
+        run: |
+          set -euo pipefail
+          V="$(yq '.version' snap/snapcraft.yaml)"
+          # archs as a JSON array (for the matrix) AND a CSV (for display/completeness).
+          ARCHS_JSON="$(yq -o=json -I=0 '.platforms | keys' snap/snapcraft.yaml)"
+          ARCHS_CSV="$(yq '.platforms | keys | join(",")' snap/snapcraft.yaml)"
+          # ── TRACK-SPECIFIC (disabled: per-version v<MM> tracks / "TCG" not set up) ──
+          # TRACK="$(.github/scripts/snap-release.sh version-to-track "$V")"
+          # echo "track=$TRACK" >> "$GITHUB_OUTPUT"
+          # ───────────────────────────────────────────────────────────────────────────
+          {
+            echo "version=$V"
+            echo "archs=$ARCHS_JSON"
+            echo "archs_csv=$ARCHS_CSV"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # a dead arch must not cancel its siblings
+      matrix:
+        arch: ${{ fromJSON(needs.meta.outputs.archs) }}
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # snapcraft remote-build refuses shallow clones, so fetch full history.
+          fetch-depth: 0
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+      - name: Configure Launchpad credentials
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.local/share/snapcraft
+          # Trailing newline matters: `printf '%s'` alone drops it and Launchpad
+          # auth/push then fails. `%s\n` keeps printf's literal-safety AND the newline.
+          printf '%s\n' "${{ secrets.LAUNCHPAD_CREDENTIALS }}" > ~/.local/share/snapcraft/launchpad-credentials
+      - name: Remote-build ${{ matrix.arch }} (retry transient fetch failures)
+        id: build
+        run: .github/scripts/remote-build.sh "${{ matrix.arch }}"
+      - name: Publish ${{ matrix.arch }} to latest/edge/pr<PR>
+        id: publish
+        if: ${{ steps.build.outputs.snaps != '0' && github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          # "pr<N>" branch (>= 2 chars; the store rejects a bare single-digit branch
+          # like "1"). Keep in sync with release-on-merge.yml.
+          CHAN="latest/edge/pr$PR"
+          ARCH="${{ matrix.arch }}"
+          f="$(ls -1 "${SNAP_NAME}"*"${ARCH}".snap 2>/dev/null | head -n1 || true)"
+          if [ -z "$f" ]; then echo "::error::remote-build reported a snap but none is on disk for ${ARCH}"; exit 1; fi
+          echo "Uploading $f -> $CHAN"
+          # Bounded retry: the store upload can drop mid-transfer on a valid snap.
+          .github/scripts/retry.sh 3 15 -- snapcraft upload "$f" --release="$CHAN"
+          # Marker (only reached on a successful upload) tells the report job this arch published.
+          mkdir -p out && touch "out/uploaded-${ARCH}"
+      - name: Upload published marker
+        if: ${{ steps.publish.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: uploaded-${{ matrix.arch }}
+          path: out/uploaded-${{ matrix.arch }}
+          retention-days: 7
+          if-no-files-found: error
+      # On a build failure, surface the per-arch Launchpad build log (compile/pack
+      # output) + snapcraft's runner log as an artifact the report job folds into
+      # the PR comment.
+      - name: Capture build logs on failure
+        if: ${{ always() && steps.build.outputs.snaps == '0' }}
+        run: |
+          shopt -s nullglob
+          out="${RUNNER_TEMP}/buildlog-${{ matrix.arch }}.txt"
+          : > "$out"
+          for f in snapcraft-*.txt "$HOME"/.local/state/snapcraft/log/*.log "$HOME"/.cache/snapcraft/log/*.log; do
+            { echo "===== $f ====="; cat "$f"; } >> "$out"
+          done
+          [ -s "$out" ] || echo "(no build logs found for ${{ matrix.arch }})" >> "$out"
+          tail -c 50000 "$out" > "$out.cut" && mv "$out.cut" "$out"
+          echo "BUILDLOG=$out" >> "$GITHUB_ENV"
+      - name: Upload build log artifact
+        if: ${{ always() && steps.build.outputs.snaps == '0' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: buildlog-${{ matrix.arch }}
+          path: ${{ env.BUILDLOG }}
+          retention-days: 7
+          if-no-files-found: ignore
+          overwrite: true   # "Re-run failed jobs" replaces this leg's prior log
+
+  report:
+    needs: [meta, build]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download published markers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: uploaded-*
+          path: markers
+          merge-multiple: true
+        continue-on-error: true
+      - name: Download build logs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: buildlog-*
+          path: buildlogs
+          merge-multiple: true
+        continue-on-error: true
+      - name: Render comment + completeness
+        id: r
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          CHAN="latest/edge/pr$PR"
+          WANTED="${{ needs.meta.outputs.archs_csv }}"
+          PUBLISHED="$(ls markers/ 2>/dev/null | sed -n 's/^uploaded-//p' | paste -sd, - || true)"
+          BODY="${RUNNER_TEMP}/comment.md"
+          SNAP_NAME="$SNAP_NAME" .github/scripts/pr-comment.sh "$CHAN" "$WANTED" "$PUBLISHED" > "$BODY"
+          # Fold the build log into the comment only when nothing was published.
+          if [ -z "$PUBLISHED" ] && ls buildlogs/* >/dev/null 2>&1; then
+            {
+              echo
+              echo '<details><summary>build log (last 50 KB)</summary>'
+              echo
+              echo '```text'
+              cat buildlogs/*
+              echo '```'
+              echo
+              echo '</details>'
+            } >> "$BODY"
+          fi
+          echo "body=$BODY" >> "$GITHUB_OUTPUT"
+          w="$(printf '%s' "$WANTED"    | tr ',' '\n' | sed '/^$/d' | sort -u)"
+          p="$(printf '%s' "$PUBLISHED" | tr ',' '\n' | sed '/^$/d' | sort -u)"
+          if [ "$w" = "$p" ]; then echo "complete=yes" >> "$GITHUB_OUTPUT"; else echo "complete=no" >> "$GITHUB_OUTPUT"; fi
+          missing="$(comm -23 <(printf '%s\n' "$w") <(printf '%s\n' "$p") | paste -sd, - || true)"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+      - name: Sticky PR comment
+        uses: actions/github-script@v9
+        env:
+          BODY: ${{ steps.r.outputs.body }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- pr-build-snap -->';
+            const text = fs.readFileSync(process.env.BODY, 'utf8');
+            const body = `${marker}\n${text}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const api = github.rest.issues;
+            const { data: comments } = await api.listComments({ owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) await api.updateComment({ owner, repo, comment_id: existing.id, body });
+            else await api.createComment({ owner, repo, issue_number, body });
+      - name: Fail if any wanted arch is unpublished
+        if: ${{ steps.r.outputs.complete != 'yes' }}
+        run: |
+          echo "::error::Incomplete publish: missing=[${{ steps.r.outputs.missing }}] wanted=[${{ needs.meta.outputs.archs_csv }}]"
+          exit 1

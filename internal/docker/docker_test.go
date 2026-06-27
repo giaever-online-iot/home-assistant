@@ -1,0 +1,102 @@
+package docker
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+type fakeRunner struct {
+	outputs    map[string]string
+	errs       map[string]error
+	calls      [][]string
+	streamErrs []error // returned in order for successive Stream calls
+}
+
+func (f *fakeRunner) Output(args ...string) (string, error) {
+	key := strings.Join(args, " ")
+	f.calls = append(f.calls, args)
+	return f.outputs[key], f.errs[key]
+}
+func (f *fakeRunner) Stream(args ...string) error {
+	f.calls = append(f.calls, args)
+	if len(f.streamErrs) > 0 {
+		err := f.streamErrs[0]
+		f.streamErrs = f.streamErrs[1:]
+		return err
+	}
+	return nil
+}
+
+func TestExistsAndRunning(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"ps -a --filter name=^/homeassistant$ --format {{.Names}}": "homeassistant",
+		"inspect -f {{.State.Running}} homeassistant":              "true",
+	}}
+	c := NewWithRunner(f)
+	if ok, _ := c.Exists("homeassistant"); !ok {
+		t.Error("Exists should be true")
+	}
+	if ok, _ := c.Running("homeassistant"); !ok {
+		t.Error("Running should be true")
+	}
+}
+
+func TestImageDigest(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"inspect -f {{.Image}} homeassistant":                                "sha256:imgid",
+		"inspect -f {{range .RepoDigests}}{{println .}}{{end}} sha256:imgid": "ghcr.io/home-assistant/home-assistant@sha256:deadbeef\n",
+	}}
+	c := NewWithRunner(f)
+	got, _ := c.ImageDigest("homeassistant")
+	if got != "sha256:deadbeef" {
+		t.Errorf("ImageDigest = %q, want sha256:deadbeef", got)
+	}
+}
+
+func TestRunAndCapturePassThrough(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{"x y": "out"}}
+	c := NewWithRunner(f)
+	if err := c.Run([]string{"run", "-d"}); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := c.Capture([]string{"x", "y"}); out != "out" {
+		t.Errorf("Capture = %q", out)
+	}
+}
+
+func TestPullRetrySucceedsAfterTransientFailures(t *testing.T) {
+	f := &fakeRunner{streamErrs: []error{errors.New("boom"), errors.New("boom")}} // fail twice, then succeed
+	c := NewWithRunner(f)
+	if err := c.pull("img", 3, 0); err != nil {
+		t.Fatalf("pull should succeed on the 3rd attempt: %v", err)
+	}
+	if len(f.calls) != 3 {
+		t.Errorf("expected 3 pull attempts, got %d", len(f.calls))
+	}
+}
+
+func TestPullRetryFailsAfterAllAttempts(t *testing.T) {
+	f := &fakeRunner{streamErrs: []error{errors.New("a"), errors.New("b"), errors.New("c")}}
+	c := NewWithRunner(f)
+	if err := c.pull("img", 3, 0); err == nil {
+		t.Fatal("pull should fail after exhausting all attempts")
+	}
+	if len(f.calls) != 3 {
+		t.Errorf("expected 3 pull attempts, got %d", len(f.calls))
+	}
+}
+
+func TestImageExists(t *testing.T) {
+	f := &fakeRunner{
+		outputs: map[string]string{"image inspect present:tag": "[{}]"},
+		errs:    map[string]error{"image inspect absent:tag": errors.New("No such image")},
+	}
+	c := NewWithRunner(f)
+	if ok, _ := c.ImageExists("present:tag"); !ok {
+		t.Error("present image should report exists")
+	}
+	if ok, _ := c.ImageExists("absent:tag"); ok {
+		t.Error("absent image should report not-exists")
+	}
+}
