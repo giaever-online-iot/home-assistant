@@ -54,4 +54,9 @@ check "is-at-least lesser"       "no"  "$("$SR" is-at-least v11.5.0 v11.19.0)"
 check "is-at-least empty-floor"  "yes" "$("$SR" is-at-least v11.0.0 "")"
 check "is-at-least minor-numeric" "yes" "$("$SR" is-at-least v11.20.0 v11.9.0)"
 
+check "latest-targets newest"       "latest/candidate latest/edge" "$("$SR" latest-targets v12.0.0 v11.20.0 v11.20.0)"
+check "latest-targets backport"     ""                             "$("$SR" latest-targets v11.18.0 v11.20.0 v11.20.0)"
+check "latest-targets empty-floors" "latest/candidate latest/edge" "$("$SR" latest-targets v11.20.0 "" "")"
+check "latest-targets edge-ahead"   "latest/candidate"             "$("$SR" latest-targets v11.20.5 v11.20.0 v11.21.0)"
+
 exit "$fail"
