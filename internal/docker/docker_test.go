@@ -9,6 +9,7 @@ import (
 type fakeRunner struct {
 	outputs    map[string]string
 	errs       map[string]error
+	checks     map[string]bool // Check exit-0 results by joined-args key
 	calls      [][]string
 	streamErrs []error // returned in order for successive Stream calls
 }
@@ -26,6 +27,11 @@ func (f *fakeRunner) Stream(args ...string) error {
 		return err
 	}
 	return nil
+}
+func (f *fakeRunner) Check(args ...string) (bool, error) {
+	key := strings.Join(args, " ")
+	f.calls = append(f.calls, args)
+	return f.checks[key], f.errs[key]
 }
 
 func TestExistsAndRunning(t *testing.T) {
@@ -98,5 +104,33 @@ func TestImageExists(t *testing.T) {
 	}
 	if ok, _ := c.ImageExists("absent:tag"); ok {
 		t.Error("absent image should report not-exists")
+	}
+}
+
+func TestRestart(t *testing.T) {
+	f := &fakeRunner{}
+	c := NewWithRunner(f)
+	if err := c.Restart("homeassistant"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || f.calls[0][0] != "restart" || f.calls[0][1] != "homeassistant" {
+		t.Errorf("Restart called %v", f.calls)
+	}
+}
+
+func TestExecCheck(t *testing.T) {
+	f := &fakeRunner{
+		checks: map[string]bool{"exec homeassistant test -d /config/custom_components/hacs": true},
+		errs:   map[string]error{"exec homeassistant boom": errors.New("cannot run docker")},
+	}
+	c := NewWithRunner(f)
+	if ok, err := c.ExecCheck("homeassistant", "test", "-d", "/config/custom_components/hacs"); !ok || err != nil {
+		t.Errorf("present path: ok=%v err=%v, want true,nil", ok, err)
+	}
+	if ok, err := c.ExecCheck("homeassistant", "test", "-d", "/nope"); ok || err != nil {
+		t.Errorf("missing path: ok=%v err=%v, want false,nil", ok, err)
+	}
+	if _, err := c.ExecCheck("homeassistant", "boom"); err == nil {
+		t.Error("docker invocation failure should return an error")
 	}
 }
