@@ -225,10 +225,9 @@ func run(cmd string) error {
 		}
 		return cli.Exec(dockerargs.ContainerName, "/bin/bash")
 	case "install":
-		if err := preflightContainer(cli, cfg); err != nil {
-			return err
-		}
-		return runInstall(cli, os.Args[2:])
+		// runInstall validates the target FIRST (cheap), then preflights — so a
+		// usage error fails instantly instead of paying for slow docker calls.
+		return runInstall(cli, cfg, os.Args[2:])
 	case "ingress":
 		return runIngress(cli, cfg, os.Args[2:])
 	default:

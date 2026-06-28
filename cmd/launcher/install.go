@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/giaever-online-iot/home-assistant/internal/config"
 	"github.com/giaever-online-iot/home-assistant/internal/docker"
 	"github.com/giaever-online-iot/home-assistant/internal/dockerargs"
 )
@@ -98,9 +99,10 @@ func parseInstallArgs(args []string) (target string, noRestart, force bool, err 
 }
 
 // runInstall installs a registered target into HA's /config and (unless
-// --no-restart) restarts the container so HA loads it. The container must be
-// running — the caller runs preflightContainer first.
-func runInstall(cli *docker.Client, args []string) error {
+// --no-restart) restarts the container so HA loads it. Argument/target
+// validation happens BEFORE the docker preflight so a usage error fails fast —
+// the preflight's docker calls can be slow.
+func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
 	target, noRestart, force, err := parseInstallArgs(args)
 	if err != nil {
 		return err
@@ -108,6 +110,10 @@ func runInstall(cli *docker.Client, args []string) error {
 	recipe, ok := resolveTarget(target)
 	if !ok {
 		return fmt.Errorf("unknown install target %q; targets: %s", target, strings.Join(installTargets(), ", "))
+	}
+	// Cheap validation done — only now pay for the (possibly slow) container preflight.
+	if err := preflightContainer(cli, cfg); err != nil {
+		return err
 	}
 	if !force {
 		installed, err := cli.ExecCheck(dockerargs.ContainerName, "test", "-d", recipe.Dest)
