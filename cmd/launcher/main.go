@@ -34,7 +34,7 @@ func loadConfig() (config.Config, error) {
 	// configure hook and rolls back the whole install. Query each config namespace
 	// and tolerate "unset" so an unconfigured install resolves to all-defaults.
 	merged := map[string]json.RawMessage{}
-	for _, ns := range []string{"image", "docker"} {
+	for _, ns := range []string{"image", "docker", "ingress"} {
 		out, err := exec.Command("snapctl", "get", "-d", ns).Output()
 		if err != nil {
 			continue // namespace not set on this install → defaults apply
@@ -173,7 +173,7 @@ func preflightContainer(cli *docker.Client, cfg config.Config) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|install|validate>")
+		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|install|ingress|validate>")
 		os.Exit(2)
 	}
 	if err := run(os.Args[1]); err != nil {
@@ -229,6 +229,8 @@ func run(cmd string) error {
 			return err
 		}
 		return runInstall(cli, os.Args[2:])
+	case "ingress":
+		return runIngress(cli, cfg, os.Args[2:])
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}

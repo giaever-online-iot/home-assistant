@@ -35,6 +35,26 @@ var installRegistry = map[string]Recipe{
 			"  2. Acknowledge the prompts, then complete the GitHub device authorization.\n" +
 			"HACS updates itself from the UI thereafter.\n",
 	},
+	"hass-ingress": {
+		Name: "hass-ingress",
+		Dest: "/config/custom_components/hass_ingress",
+		Install: func(c *docker.Client) error {
+			// Fetch lovelylain/hass_ingress and copy its custom_components/hass_ingress
+			// into /config from inside the running container.
+			return c.Exec(dockerargs.ContainerName, "bash", "-c",
+				"set -e; cd /tmp; "+
+					"wget -qO hi.tgz https://github.com/lovelylain/hass_ingress/archive/refs/heads/main.tar.gz; "+
+					"tar xzf hi.tgz; "+
+					"mkdir -p /config/custom_components; "+
+					"rm -rf /config/custom_components/hass_ingress; "+
+					"cp -r hass_ingress-main/custom_components/hass_ingress /config/custom_components/; "+
+					"rm -rf hi.tgz hass_ingress-main")
+		},
+		Activation: "\nhass_ingress installed. Next:\n" +
+			"  1. Define panels:  snap set home-assistant ingress.<name>.url=http://localhost:<port> ingress.<name>.title=\"<Title>\"\n" +
+			"  2. Apply:          home-assistant.ingress sync\n" +
+			"Each panel then appears in the Home Assistant sidebar.\n",
+	},
 }
 
 func resolveTarget(name string) (Recipe, bool) {
