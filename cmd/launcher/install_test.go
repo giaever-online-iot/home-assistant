@@ -16,8 +16,8 @@ func TestResolveTarget(t *testing.T) {
 }
 
 func TestInstallTargets(t *testing.T) {
-	if got := installTargets(); !reflect.DeepEqual(got, []string{"hacs"}) {
-		t.Errorf("installTargets() = %v, want [hacs]", got)
+	if got := installTargets(); !reflect.DeepEqual(got, []string{"hacs", "hass-ingress"}) {
+		t.Errorf("installTargets() = %v, want [hacs hass-ingress]", got)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 type Runner interface {
 	Output(args ...string) (string, error)
 	Stream(args ...string) error
+	StreamIn(stdin string, args ...string) error
 	Check(args ...string) (bool, error)
 }
 
@@ -26,6 +27,15 @@ func (r execRunner) Output(args ...string) (string, error) {
 func (r execRunner) Stream(args ...string) error {
 	cmd := exec.Command(r.bin, args...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	return cmd.Run()
+}
+
+// StreamIn runs the command feeding `stdin` to its standard input (used to pipe
+// file content into `docker exec -i … sh -c 'cat > …'`).
+func (r execRunner) StreamIn(stdin string, args ...string) error {
+	cmd := exec.Command(r.bin, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
 }
 
@@ -116,6 +126,23 @@ func (c *Client) Restart(name string) error { return c.r.Stream("restart", name)
 // an error only when docker itself couldn't be run.
 func (c *Client) ExecCheck(name string, cmd ...string) (bool, error) {
 	return c.r.Check(append([]string{"exec", name}, cmd...)...)
+}
+
+// WriteFile writes content to path inside the running container by piping it
+// through `docker exec -i … sh -c 'cat > path'` — used to land snap-managed
+// config files (e.g. snap-ingress.yaml) into the /config volume.
+func (c *Client) WriteFile(name, path, content string) error {
+	return c.r.StreamIn(content, "exec", "-i", name, "sh", "-c", "cat > "+path)
+}
+
+// ReadFile returns the content of path inside the container, or "" with no error
+// when the file is absent/unreadable.
+func (c *Client) ReadFile(name, path string) (string, error) {
+	out, err := c.r.Output("exec", name, "cat", path)
+	if err != nil {
+		return "", nil
+	}
+	return out, nil
 }
 
 const (

@@ -22,6 +22,12 @@ description: |
 
     home-assistant.install hacs
 
+  Surface a companion service's UI in the sidebar (ingress):
+
+    home-assistant.install hass-ingress
+    snap set home-assistant ingress.zwave.url=http://localhost:8091 ingress.zwave.title="Z-Wave JS UI"
+    home-assistant.ingress sync
+
 license: Apache-2.0
 contact: https://github.com/giaever-online-iot/home-assistant/issues
 issues: https://github.com/giaever-online-iot/home-assistant/issues
@@ -71,6 +77,9 @@ apps:
     plugs: [docker]
   install:
     command: bin/launcher install
+    plugs: [docker]
+  ingress:
+    command: bin/launcher ingress
     plugs: [docker]
 
 parts:

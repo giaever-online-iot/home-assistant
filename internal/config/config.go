@@ -20,6 +20,16 @@ type Config struct {
 	Volumes       map[string]string
 	Environment   map[string]string
 	ExtraArgs     string
+	Ingress       map[string]IngressSpec
+}
+
+// IngressSpec is one hass_ingress sidebar panel that proxies to a backend URL.
+type IngressSpec struct {
+	URL          string
+	Title        string
+	Icon         string
+	WorkMode     string // hass_ingress work_mode; default "ingress"
+	RequireAdmin bool
 }
 
 type rawConfig struct {
@@ -39,6 +49,13 @@ type rawConfig struct {
 		Environment map[string]string `json:"environment"`
 		ExtraArgs   string            `json:"extra-args"`
 	} `json:"docker"`
+	Ingress map[string]struct {
+		URL          string `json:"url"`
+		Title        string `json:"title"`
+		Icon         string `json:"icon"`
+		WorkMode     string `json:"work-mode"`
+		RequireAdmin *bool  `json:"require-admin"`
+	} `json:"ingress"`
 }
 
 const (
@@ -55,6 +72,19 @@ func Parse(data []byte) (Config, error) {
 			return Config{}, fmt.Errorf("parsing snap config: %w", err)
 		}
 	}
+	var ingress map[string]IngressSpec
+	if len(raw.Ingress) > 0 {
+		ingress = make(map[string]IngressSpec, len(raw.Ingress))
+		for name, e := range raw.Ingress {
+			ingress[name] = IngressSpec{
+				URL:          e.URL,
+				Title:        e.Title,
+				Icon:         e.Icon,
+				WorkMode:     orDefault(e.WorkMode, "ingress"),
+				RequireAdmin: boolOrDefault(e.RequireAdmin, false),
+			}
+		}
+	}
 	return Config{
 		ImageRegistry: orDefault(raw.Image.Registry, defaultRegistry),
 		ImageChannel:  orDefault(raw.Image.Channel, defaultChannel),
@@ -68,6 +98,7 @@ func Parse(data []byte) (Config, error) {
 		Volumes:       raw.Docker.Volumes,
 		Environment:   raw.Docker.Environment,
 		ExtraArgs:     raw.Docker.ExtraArgs,
+		Ingress:       ingress,
 	}, nil
 }
 
@@ -106,6 +137,16 @@ func (c Config) Validate() (warnings []string, err error) {
 	}
 	if c.ConfigDir != "" && !strings.HasPrefix(c.ConfigDir, "/") {
 		return warnings, fmt.Errorf("docker.config-dir=%q: must be an absolute path", c.ConfigDir)
+	}
+	for name, ing := range c.Ingress {
+		if ing.URL == "" {
+			return warnings, fmt.Errorf("ingress.%s.url is required", name)
+		}
+		switch ing.WorkMode {
+		case "ingress", "iframe", "auth", "hassio", "custom":
+		default:
+			warnings = append(warnings, fmt.Sprintf("ingress.%s.work-mode=%q: unknown mode (ingress/iframe/auth/hassio/custom)", name, ing.WorkMode))
+		}
 	}
 	return warnings, nil
 }

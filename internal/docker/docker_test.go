@@ -12,6 +12,7 @@ type fakeRunner struct {
 	checks     map[string]bool // Check exit-0 results by joined-args key
 	calls      [][]string
 	streamErrs []error // returned in order for successive Stream calls
+	lastStdin  string  // stdin from the most recent StreamIn call
 }
 
 func (f *fakeRunner) Output(args ...string) (string, error) {
@@ -32,6 +33,11 @@ func (f *fakeRunner) Check(args ...string) (bool, error) {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, args)
 	return f.checks[key], f.errs[key]
+}
+func (f *fakeRunner) StreamIn(stdin string, args ...string) error {
+	f.calls = append(f.calls, args)
+	f.lastStdin = stdin
+	return nil
 }
 
 func TestExistsAndRunning(t *testing.T) {
@@ -132,5 +138,33 @@ func TestExecCheck(t *testing.T) {
 	}
 	if _, err := c.ExecCheck("homeassistant", "boom"); err == nil {
 		t.Error("docker invocation failure should return an error")
+	}
+}
+
+func TestWriteFile(t *testing.T) {
+	f := &fakeRunner{}
+	c := NewWithRunner(f)
+	if err := c.WriteFile("homeassistant", "/config/snap-ingress.yaml", "body\n"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || strings.Join(f.calls[0], " ") != "exec -i homeassistant sh -c cat > /config/snap-ingress.yaml" {
+		t.Errorf("WriteFile args = %v", f.calls)
+	}
+	if f.lastStdin != "body\n" {
+		t.Errorf("WriteFile stdin = %q, want %q", f.lastStdin, "body\n")
+	}
+}
+
+func TestReadFile(t *testing.T) {
+	f := &fakeRunner{
+		outputs: map[string]string{"exec homeassistant cat /config/configuration.yaml": "default_config:"},
+		errs:    map[string]error{"exec homeassistant cat /config/missing": errors.New("No such file")},
+	}
+	c := NewWithRunner(f)
+	if out, err := c.ReadFile("homeassistant", "/config/configuration.yaml"); out != "default_config:" || err != nil {
+		t.Errorf("present: %q,%v", out, err)
+	}
+	if out, err := c.ReadFile("homeassistant", "/config/missing"); out != "" || err != nil {
+		t.Errorf("absent: %q,%v want '',nil", out, err)
 	}
 }
