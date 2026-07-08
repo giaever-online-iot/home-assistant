@@ -73,3 +73,37 @@ func TestParseAddonsAbsent(t *testing.T) {
 		t.Error("no ingress keys should mean a nil Ingress (no panel wanted)")
 	}
 }
+
+func TestIngressPortSpec(t *testing.T) {
+	ing := &AddonIngress{Title: "X"}
+	// "ui" label wins even with several ports.
+	s := AddonSpec{Ports: map[string]string{"ui": "1880", "metrics": "9100"}, Ingress: ing}
+	if ps, err := s.IngressPortSpec(); err != nil || ps.Host != "1880" {
+		t.Errorf("ui label: %+v, %v", ps, err)
+	}
+	// A single port is unambiguous.
+	s = AddonSpec{Ports: map[string]string{"web": "3000"}, Ingress: ing}
+	if ps, err := s.IngressPortSpec(); err != nil || ps.Host != "3000" {
+		t.Errorf("single port: %+v, %v", ps, err)
+	}
+	// Explicit ingress.port selects a label.
+	s = AddonSpec{Ports: map[string]string{"a": "1000", "b": "2000"}, Ingress: &AddonIngress{Port: "b"}}
+	if ps, err := s.IngressPortSpec(); err != nil || ps.Host != "2000" {
+		t.Errorf("explicit label: %+v, %v", ps, err)
+	}
+}
+
+func TestIngressPortSpecErrors(t *testing.T) {
+	ing := &AddonIngress{}
+	cases := []AddonSpec{
+		{Ingress: ing}, // no ports at all
+		{Ports: map[string]string{"a": "1000", "b": "2000"}, Ingress: ing},         // ambiguous
+		{Ports: map[string]string{"a": "1000"}, Ingress: &AddonIngress{Port: "z"}}, // unknown label
+		{Ingress: nil}, // no panel wanted
+	}
+	for i, s := range cases {
+		if _, err := s.IngressPortSpec(); err == nil {
+			t.Errorf("case %d: expected error", i)
+		}
+	}
+}

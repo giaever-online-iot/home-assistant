@@ -116,3 +116,32 @@ func anyToString(v any) string {
 	}
 	return fmt.Sprint(v)
 }
+
+// IngressPortSpec resolves which published port the add-on's sidebar panel
+// proxies to: the explicit ingress.port label, else the "ui" label, else the
+// only port. Anything else is ambiguous and is a validation error.
+func (s AddonSpec) IngressPortSpec() (PortSpec, error) {
+	if s.Ingress == nil {
+		return PortSpec{}, fmt.Errorf("no ingress panel configured")
+	}
+	label := s.Ingress.Port
+	if label == "" {
+		switch {
+		case s.Ports["ui"] != "":
+			label = "ui"
+		case len(s.Ports) == 1:
+			for l := range s.Ports {
+				label = l
+			}
+		case len(s.Ports) == 0:
+			return PortSpec{}, fmt.Errorf("a panel needs at least one ports.* entry")
+		default:
+			return PortSpec{}, fmt.Errorf("several ports and none labeled \"ui\" — set ingress.port to one of the labels")
+		}
+	}
+	v, ok := s.Ports[label]
+	if !ok {
+		return PortSpec{}, fmt.Errorf("ingress.port=%q matches no ports.* label", label)
+	}
+	return ParsePortSpec(v)
+}
