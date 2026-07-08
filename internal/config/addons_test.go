@@ -30,3 +30,46 @@ func TestParsePortSpecRejectsGarbage(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAddons(t *testing.T) {
+	in := `{"addons":{"nodered":{
+		"image":"nodered/node-red:latest",
+		"ports":{"ui":1880,"alt":"8080:1880"},
+		"data-dir":"/data",
+		"volumes":{"certs":"/etc/certs:/certs:ro"},
+		"environment":{"foo":"bar"},
+		"ingress":{"title":"Node-RED","icon":"mdi:nodejs","require-admin":true}
+	}}}`
+	c, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	a, ok := c.Addons["nodered"]
+	if !ok {
+		t.Fatal("addon nodered not parsed")
+	}
+	if a.Image != "nodered/node-red:latest" || a.DataDir != "/data" {
+		t.Errorf("image/data-dir wrong: %+v", a)
+	}
+	// JSON numbers (snapctl emits unquoted ints) normalize to strings.
+	if a.Ports["ui"] != "1880" || a.Ports["alt"] != "8080:1880" {
+		t.Errorf("ports wrong: %+v", a.Ports)
+	}
+	if a.Volumes["certs"] != "/etc/certs:/certs:ro" || a.Environment["foo"] != "bar" {
+		t.Errorf("volumes/env wrong: %+v", a)
+	}
+	if a.Ingress == nil || a.Ingress.Title != "Node-RED" || a.Ingress.Icon != "mdi:nodejs" || !a.Ingress.RequireAdmin {
+		t.Errorf("ingress wrong: %+v", a.Ingress)
+	}
+}
+
+func TestParseAddonsAbsent(t *testing.T) {
+	c, err := Parse([]byte(`{}`))
+	if err != nil || c.Addons != nil {
+		t.Fatalf("no addons should parse to nil map, got %+v err=%v", c.Addons, err)
+	}
+	c2, _ := Parse([]byte(`{"addons":{"x":{"image":"img"}}}`))
+	if c2.Addons["x"].Ingress != nil {
+		t.Error("no ingress keys should mean a nil Ingress (no panel wanted)")
+	}
+}

@@ -21,6 +21,7 @@ type Config struct {
 	Environment   map[string]string
 	ExtraArgs     string
 	Ingress       map[string]IngressSpec
+	Addons        map[string]AddonSpec
 }
 
 // IngressSpec is one hass_ingress sidebar panel that proxies to a backend URL.
@@ -56,6 +57,7 @@ type rawConfig struct {
 		WorkMode     string `json:"work-mode"`
 		RequireAdmin *bool  `json:"require-admin"`
 	} `json:"ingress"`
+	Addons map[string]rawAddon `json:"addons"`
 }
 
 const (
@@ -85,6 +87,13 @@ func Parse(data []byte) (Config, error) {
 			}
 		}
 	}
+	var addons map[string]AddonSpec
+	if len(raw.Addons) > 0 {
+		addons = make(map[string]AddonSpec, len(raw.Addons))
+		for name, a := range raw.Addons {
+			addons[name] = a.toSpec()
+		}
+	}
 	return Config{
 		ImageRegistry: orDefault(raw.Image.Registry, defaultRegistry),
 		ImageChannel:  orDefault(raw.Image.Channel, defaultChannel),
@@ -99,6 +108,7 @@ func Parse(data []byte) (Config, error) {
 		Environment:   raw.Docker.Environment,
 		ExtraArgs:     raw.Docker.ExtraArgs,
 		Ingress:       ingress,
+		Addons:        addons,
 	}, nil
 }
 
