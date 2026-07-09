@@ -36,6 +36,24 @@ func TestDeriveEntriesModelA(t *testing.T) {
 	}
 }
 
+func TestDeriveEntriesModelAExplicitBindIP(t *testing.T) {
+	c := parse(t, `{"addons":{
+		"nodered":{"image":"i","ports":{"ui":"192.168.1.5:8080:80"},"ingress":{}}
+	}}`)
+	e := DeriveEntries(c.Addons, c.Network)["nodered"]
+	if e.URL != "http://192.168.1.5:8080" { // bound to a specific ip: only that ip is reachable
+		t.Errorf("URL = %q", e.URL)
+	}
+
+	c = parse(t, `{"addons":{
+		"mqtt":{"image":"i","ports":{"ui":"0.0.0.0:1883:1883"},"ingress":{}}
+	}}`)
+	e = DeriveEntries(c.Addons, c.Network)["mqtt"]
+	if e.URL != "http://127.0.0.1:1883" { // 0.0.0.0 is reachable via loopback too
+		t.Errorf("URL = %q", e.URL)
+	}
+}
+
 func TestDeriveEntriesModelB(t *testing.T) {
 	c := parse(t, `{"docker":{"network":"ha-addons"},"addons":{
 		"nodered":{"image":"i","ports":{"ui":"8080:1880"},"ingress":{"title":"Node-RED"}}

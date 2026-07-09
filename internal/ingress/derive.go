@@ -21,7 +21,15 @@ func DeriveEntries(addons map[string]config.AddonSpec, network string) map[strin
 		if err != nil {
 			continue // fatal at validate; unreachable after a successful Validate
 		}
-		url := "http://127.0.0.1:" + ps.Host
+		// Model A: HA reaches the add-on via the published host port. 127.0.0.1
+		// and 0.0.0.0 are both reachable from HA's own (host) netns via
+		// loopback; any other ip binds the port there exclusively, so the
+		// panel must target that ip instead.
+		host := "127.0.0.1"
+		if ps.IP != "127.0.0.1" && ps.IP != "0.0.0.0" {
+			host = ps.IP
+		}
+		url := "http://" + host + ":" + ps.Host
 		if network == dockerargs.AddonNetwork {
 			url = "http://" + dockerargs.AddonContainerName(name) + ":" + ps.Container
 		}
