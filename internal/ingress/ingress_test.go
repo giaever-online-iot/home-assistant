@@ -19,7 +19,7 @@ func TestRenderEmpty(t *testing.T) {
 
 func TestRenderEntriesSortedAndComplete(t *testing.T) {
 	out := Render(map[string]config.IngressSpec{
-		"zwave":  {URL: "http://localhost:8091", Title: "Z-Wave JS UI", Icon: "mdi:z-wave", WorkMode: "ingress"},
+		"zwave":   {URL: "http://localhost:8091", Title: "Z-Wave JS UI", Icon: "mdi:z-wave", WorkMode: "ingress"},
 		"nodered": {URL: "http://localhost:1880", Title: "Node-RED", WorkMode: "iframe", RequireAdmin: true},
 	})
 	// sorted: nodered before zwave
