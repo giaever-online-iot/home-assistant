@@ -24,7 +24,7 @@ func TestParsePortSpec(t *testing.T) {
 }
 
 func TestParsePortSpecRejectsGarbage(t *testing.T) {
-	for _, in := range []string{"", "abc", "0", "65536", "80:", ":80", "1.2.3.4:80:81:82", "1.2.3.4::80"} {
+	for _, in := range []string{"", "abc", "0", "65536", "80:", ":80", "1.2.3.4:80:81:82", "1.2.3.4::80", "junk:80:81", "999.1.1.1:80:80"} {
 		if _, err := ParsePortSpec(in); err == nil {
 			t.Errorf("ParsePortSpec(%q): expected error", in)
 		}

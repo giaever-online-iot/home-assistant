@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ func ParsePortSpec(v string) (PortSpec, error) {
 		}
 		return PortSpec{IP: "127.0.0.1", Host: parts[0], Container: parts[1]}, nil
 	case 3:
-		if parts[0] == "" || !validPort(parts[1]) || !validPort(parts[2]) {
+		if net.ParseIP(parts[0]) == nil || !validPort(parts[1]) || !validPort(parts[2]) {
 			return PortSpec{}, fmt.Errorf("invalid port mapping %q (want ip:host:container)", v)
 		}
 		return PortSpec{IP: parts[0], Host: parts[1], Container: parts[2]}, nil
