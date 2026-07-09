@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
+	"github.com/giaever-online-iot/home-assistant/internal/dockerargs"
+	"github.com/giaever-online-iot/home-assistant/internal/reconcile"
 )
 
 func TestBuildContainerSpecs(t *testing.T) {
@@ -30,5 +33,23 @@ func TestBuildContainerSpecs(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(specs[1].RunArgs, " "), "--name ha-addon-alpha") {
 		t.Errorf("addon args wrong: %v", specs[1].RunArgs)
+	}
+}
+
+func TestHAResultErr(t *testing.T) {
+	haErr := errors.New("ha broken")
+	results := []reconcile.Result{
+		{Name: dockerargs.ContainerName, Err: haErr},
+		{Name: "ha-addon-broken", Err: errors.New("addon broken")},
+	}
+	if err := haResultErr(results); err != haErr {
+		t.Errorf("HA error must be returned, got %v", err)
+	}
+	addonOnly := []reconcile.Result{
+		{Name: dockerargs.ContainerName},
+		{Name: "ha-addon-broken", Err: errors.New("addon broken")},
+	}
+	if err := haResultErr(addonOnly); err != nil {
+		t.Errorf("add-on-only errors must be nil, got %v", err)
 	}
 }
