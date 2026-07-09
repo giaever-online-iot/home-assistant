@@ -69,3 +69,15 @@ func TestSpecHashChanges(t *testing.T) {
 		t.Error("spec hash should change with digest")
 	}
 }
+
+func TestBuildRunArgsPublishesHAOnBridge(t *testing.T) {
+	// Model B: HA on the ha-addons bridge loses the host netns, so :8123
+	// must be explicitly published or HA becomes unreachable from the LAN.
+	got := join(BuildRunArgs(cfg(`{"docker":{"network":"ha-addons"}}`)))
+	if !strings.Contains(got, "-p 8123:8123") {
+		t.Errorf("missing -p 8123:8123 on the %s network\n got: %s", AddonNetwork, got)
+	}
+	if def := join(BuildRunArgs(cfg(`{}`))); strings.Contains(def, "8123") {
+		t.Errorf("host network must not publish ports: %s", def)
+	}
+}

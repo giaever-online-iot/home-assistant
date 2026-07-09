@@ -1,0 +1,219 @@
+// Add-on config: port specs, the AddonSpec schema, and its validation helpers.
+package config
+
+import (
+	"fmt"
+	"net"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// PortSpec is one published add-on port. IP defaults to loopback so add-on
+// UIs are reachable by HA (host netns) but invisible to the LAN — HA's auth
+// stays in front. LAN exposure requires an explicit ip in the config value.
+type PortSpec struct {
+	IP, Host, Container string
+}
+
+// ParsePortSpec parses "port", "host:container" or "ip:host:container".
+// (IPv6 ips are not supported — three colon-separated parts maximum.)
+func ParsePortSpec(v string) (PortSpec, error) {
+	parts := strings.Split(v, ":")
+	switch len(parts) {
+	case 1:
+		if !validPort(parts[0]) {
+			return PortSpec{}, fmt.Errorf("invalid port %q", v)
+		}
+		return PortSpec{IP: "127.0.0.1", Host: parts[0], Container: parts[0]}, nil
+	case 2:
+		if !validPort(parts[0]) || !validPort(parts[1]) {
+			return PortSpec{}, fmt.Errorf("invalid port mapping %q (want host:container)", v)
+		}
+		return PortSpec{IP: "127.0.0.1", Host: parts[0], Container: parts[1]}, nil
+	case 3:
+		if net.ParseIP(parts[0]) == nil || !validPort(parts[1]) || !validPort(parts[2]) {
+			return PortSpec{}, fmt.Errorf("invalid port mapping %q (want ip:host:container)", v)
+		}
+		return PortSpec{IP: parts[0], Host: parts[1], Container: parts[2]}, nil
+	default:
+		return PortSpec{}, fmt.Errorf("invalid port mapping %q", v)
+	}
+}
+
+func validPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// AddonSpec is one launcher-managed add-on container (network-only; devices
+// are reserved for a later release and rejected at validation).
+type AddonSpec struct {
+	Image       string
+	Ports       map[string]string // label → "port" | "host:container" | "ip:host:container"
+	DataDir     string            // absolute container path → named volume ha-addon-<name>-data
+	Volumes     map[string]string
+	Environment map[string]string
+	Devices     map[string]string // parsed only to be rejected (reserved)
+	Ingress     *AddonIngress     // nil = no sidebar panel wanted
+}
+
+// AddonIngress describes the add-on's sidebar panel. Port names a ports.*
+// label; empty means auto (the "ui" label, else the only port).
+type AddonIngress struct {
+	Title        string
+	Icon         string
+	Port         string
+	RequireAdmin bool
+}
+
+type rawAddon struct {
+	Image       string            `json:"image"`
+	Ports       map[string]any    `json:"ports"` // any: snapctl emits numbers unquoted
+	DataDir     string            `json:"data-dir"`
+	Volumes     map[string]string `json:"volumes"`
+	Environment map[string]string `json:"environment"`
+	Devices     map[string]string `json:"devices"`
+	Ingress     *struct {
+		Title        string `json:"title"`
+		Icon         string `json:"icon"`
+		Port         any    `json:"port"`
+		RequireAdmin *bool  `json:"require-admin"`
+	} `json:"ingress"`
+}
+
+func (r rawAddon) toSpec() AddonSpec {
+	s := AddonSpec{
+		Image:       r.Image,
+		DataDir:     r.DataDir,
+		Volumes:     r.Volumes,
+		Environment: r.Environment,
+		Devices:     r.Devices,
+	}
+	if len(r.Ports) > 0 {
+		s.Ports = make(map[string]string, len(r.Ports))
+		for k, v := range r.Ports {
+			s.Ports[k] = anyToString(v)
+		}
+	}
+	if r.Ingress != nil {
+		s.Ingress = &AddonIngress{
+			Title:        r.Ingress.Title,
+			Icon:         r.Ingress.Icon,
+			Port:         anyToString(r.Ingress.Port),
+			RequireAdmin: boolOrDefault(r.Ingress.RequireAdmin, false),
+		}
+	}
+	return s
+}
+
+// anyToString normalizes snapctl JSON scalars: integers arrive as float64 and
+// %v prints them without a decimal point (1880.0 → "1880").
+func anyToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+// IngressPortSpec resolves which published port the add-on's sidebar panel
+// proxies to: the explicit ingress.port label, else the "ui" label, else the
+// only port. Anything else is ambiguous and is a validation error.
+func (s AddonSpec) IngressPortSpec() (PortSpec, error) {
+	if s.Ingress == nil {
+		return PortSpec{}, fmt.Errorf("no ingress panel configured")
+	}
+	label := s.Ingress.Port
+	if label == "" {
+		switch {
+		case s.Ports["ui"] != "":
+			label = "ui"
+		case len(s.Ports) == 1:
+			for l := range s.Ports {
+				label = l
+			}
+		case len(s.Ports) == 0:
+			return PortSpec{}, fmt.Errorf("a panel needs at least one ports.* entry")
+		default:
+			return PortSpec{}, fmt.Errorf("several ports and none labeled \"ui\" — set ingress.port to one of the labels")
+		}
+	}
+	v, ok := s.Ports[label]
+	if !ok {
+		return PortSpec{}, fmt.Errorf("ingress.port=%q matches no ports.* label", label)
+	}
+	return ParsePortSpec(v)
+}
+
+// Add-on names become container/volume names (ha-addon-<name>); keep them
+// DNS- and docker-safe.
+var addonNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// addonsNetworkName mirrors dockerargs.AddonNetwork ("ha-addons"); config
+// cannot import dockerargs (dockerargs already imports config).
+const addonsNetworkName = "ha-addons"
+
+func (c Config) validateAddons() error {
+	names := make([]string, 0, len(c.Addons))
+	for n := range c.Addons {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	published := map[string]string{} // "ip:host" -> owning add-on name
+	for _, name := range names {
+		a := c.Addons[name]
+		if !addonNameRE.MatchString(name) {
+			return fmt.Errorf("addons.%s: name must match %s", name, addonNameRE)
+		}
+		if a.Image == "" {
+			return fmt.Errorf("addons.%s.image is required", name)
+		}
+		labels := make([]string, 0, len(a.Ports))
+		for l := range a.Ports {
+			labels = append(labels, l)
+		}
+		sort.Strings(labels)
+		for _, label := range labels {
+			ps, err := ParsePortSpec(a.Ports[label])
+			if err != nil {
+				return fmt.Errorf("addons.%s.ports.%s: %v", name, label, err)
+			}
+			// Under model B (docker.network=ha-addons) HA's own :8123 is
+			// published on the bridge (see dockerargs.BuildRunArgs); any add-on
+			// claiming that host port would collide with it at `docker run`.
+			if c.Network == addonsNetworkName && ps.Host == "8123" {
+				return fmt.Errorf("addons.%s.ports.%s: host port %s:8123 collides with Home Assistant's published :8123", name, label, ps.IP)
+			}
+			key := ps.IP + ":" + ps.Host
+			if owner, taken := published[key]; taken {
+				return fmt.Errorf("addons.%s.ports.%s: host port %s already published by addons.%s", name, label, key, owner)
+			}
+			published[key] = name
+		}
+		if a.DataDir != "" && !strings.HasPrefix(a.DataDir, "/") {
+			return fmt.Errorf("addons.%s.data-dir=%q: must be an absolute container path", name, a.DataDir)
+		}
+		for label, v := range a.Volumes {
+			if !strings.Contains(v, ":") {
+				return fmt.Errorf("addons.%s.volumes.%s=%q: volume must be host:container", name, label, v)
+			}
+		}
+		if len(a.Devices) > 0 {
+			return fmt.Errorf("addons.%s.devices.*: device passthrough lands in a later release — unset it for now", name)
+		}
+		if a.Ingress != nil {
+			if _, err := a.IngressPortSpec(); err != nil {
+				return fmt.Errorf("addons.%s.ingress: %v", name, err)
+			}
+			if _, taken := c.Ingress[name]; taken {
+				return fmt.Errorf("addons.%s: panel name collides with ingress.%s — rename one of them", name, name)
+			}
+		}
+	}
+	return nil
+}

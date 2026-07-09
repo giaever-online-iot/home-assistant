@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func loadConfig() (config.Config, error) {
 	// configure hook and rolls back the whole install. Query each config namespace
 	// and tolerate "unset" so an unconfigured install resolves to all-defaults.
 	merged := map[string]json.RawMessage{}
-	for _, ns := range []string{"image", "docker", "ingress"} {
+	for _, ns := range []string{"image", "docker", "ingress", "addons"} {
 		out, err := exec.Command("snapctl", "get", "-d", ns).Output()
 		if err != nil {
 			continue // namespace not set on this install → defaults apply
@@ -249,20 +250,69 @@ func runValidate(cfg config.Config) error {
 	return nil
 }
 
-func applyReconcile(cli *docker.Client, cfg config.Config, force bool) error {
+// reconcileSet validates cfg (printing warnings), ensures the add-ons bridge
+// exists when needed, converges the container set, and auto-syncs ingress
+// (warning-only — panels never fail a reconcile). A non-nil error is fatal
+// (bad config or a network we couldn't create) and means no container was
+// even attempted; per-container outcomes are otherwise returned in results
+// for the caller to interpret (CLI: join into one error; daemon: HA-only).
+func reconcileSet(cli *docker.Client, cfg config.Config, force bool) ([]reconcile.Result, error) {
 	warnings, err := cfg.Validate()
 	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	action, err := reconcile.Reconcile(cli, cfg, force)
-	if err != nil {
-		return err
+	// The bridge must exist before anything that joins it — add-ons always,
+	// HA too under model B (docker.network=ha-addons).
+	if len(cfg.Addons) > 0 || cfg.Network == dockerargs.AddonNetwork {
+		if err := cli.EnsureNetwork(dockerargs.AddonNetwork); err != nil {
+			return nil, fmt.Errorf("ensuring the %s network: %w", dockerargs.AddonNetwork, err)
+		}
 	}
-	fmt.Println("reconcile:", action)
+	results := reconcile.Set(cli, buildContainerSpecs(cfg), force)
+	for _, r := range results {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "reconcile %s: error: %v\n", r.Name, r.Err)
+			continue
+		}
+		fmt.Printf("reconcile %s: %s\n", r.Name, r.Action)
+	}
+	// Panels are cosmetic, containers are the substance: ingress problems
+	// must never fail (or flap) the reconcile.
+	if err := applyIngress(cli, cfg, false); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: ingress sync:", err)
+	}
+	return results, nil
+}
+
+// haResultErr returns HA's own reconcile error, if any, out of a Set's
+// results — add-on failures are deliberately excluded (a broken add-on must
+// not be treated as fatal). Pure: no I/O.
+func haResultErr(results []reconcile.Result) error {
+	for _, r := range results {
+		if r.Name == dockerargs.ContainerName {
+			return r.Err
+		}
+	}
 	return nil
+}
+
+// applyReconcile is the CLI entry point (reconcile/update/rollback): any
+// container error — HA or add-on — makes the command exit non-zero.
+func applyReconcile(cli *docker.Client, cfg config.Config, force bool) error {
+	results, fatal := reconcileSet(cli, cfg, force)
+	if fatal != nil {
+		return fatal
+	}
+	var errs []error
+	for _, r := range results {
+		if r.Err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Name, r.Err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // snapshot tars the current config and records the running image digest.
@@ -308,9 +358,22 @@ func runRollback(cli *docker.Client, cfg config.Config) error {
 	return applyReconcile(cli, cfg, true)
 }
 
+// runDaemon must not crash-loop over a broken add-on: only a fatal reconcile
+// error or HA's own container error is returned. Add-on-only failures are
+// logged and left for the next reconcile — a broken add-on image can never
+// block HA or stop log-following (systemd would otherwise flap the service).
 func runDaemon(cli *docker.Client, cfg config.Config) error {
-	if err := applyReconcile(cli, cfg, false); err != nil {
+	results, err := reconcileSet(cli, cfg, false)
+	if err != nil {
 		return err
+	}
+	if err := haResultErr(results); err != nil {
+		return err
+	}
+	for _, r := range results {
+		if r.Err != nil && r.Name != dockerargs.ContainerName {
+			fmt.Fprintf(os.Stderr, "warning: reconcile %s: %v — will retry on next reconcile\n", r.Name, r.Err)
+		}
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
