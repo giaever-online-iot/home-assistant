@@ -131,6 +131,36 @@ func TestValidateAddonsRejectsBadInputs(t *testing.T) {
 	}
 }
 
+func TestValidateAddonsRejectsPortCollisions(t *testing.T) {
+	// Two add-ons publishing the same ip:host pair.
+	c, _ := Parse([]byte(`{"addons":{
+		"a":{"image":"img","ports":{"ui":"80"}},
+		"b":{"image":"img","ports":{"ui":"80"}}
+	}}`))
+	if _, err := c.Validate(); err == nil {
+		t.Error("duplicate published host port across add-ons must be rejected")
+	}
+
+	// Same container port, different host ports: no collision.
+	c, _ = Parse([]byte(`{"addons":{
+		"a":{"image":"img","ports":{"ui":"8080:80"}},
+		"b":{"image":"img","ports":{"ui":"8081:80"}}
+	}}`))
+	if _, err := c.Validate(); err != nil {
+		t.Errorf("distinct host ports must be accepted: %v", err)
+	}
+
+	// :8123 is only reserved once HA itself publishes it (model B).
+	c, _ = Parse([]byte(`{"addons":{"x":{"image":"img","ports":{"ui":"8123"}}}}`))
+	if _, err := c.Validate(); err != nil {
+		t.Errorf(":8123 must be accepted outside model B: %v", err)
+	}
+	c, _ = Parse([]byte(`{"docker":{"network":"ha-addons"},"addons":{"x":{"image":"img","ports":{"ui":"8123"}}}}`))
+	if _, err := c.Validate(); err == nil {
+		t.Error(":8123 must be rejected under model B (docker.network=ha-addons)")
+	}
+}
+
 func TestValidateAddonsAcceptsGood(t *testing.T) {
 	in := `{"addons":{"nodered":{"image":"nodered/node-red:latest","ports":{"ui":1880},"data-dir":"/data","ingress":{"title":"Node-RED"}}}}`
 	c, _ := Parse([]byte(in))

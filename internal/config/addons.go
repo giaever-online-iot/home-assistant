@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -152,18 +153,47 @@ func (s AddonSpec) IngressPortSpec() (PortSpec, error) {
 // DNS- and docker-safe.
 var addonNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// addonsNetworkName mirrors dockerargs.AddonNetwork ("ha-addons"); config
+// cannot import dockerargs (dockerargs already imports config).
+const addonsNetworkName = "ha-addons"
+
 func (c Config) validateAddons() error {
-	for name, a := range c.Addons {
+	names := make([]string, 0, len(c.Addons))
+	for n := range c.Addons {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	published := map[string]string{} // "ip:host" -> owning add-on name
+	for _, name := range names {
+		a := c.Addons[name]
 		if !addonNameRE.MatchString(name) {
 			return fmt.Errorf("addons.%s: name must match %s", name, addonNameRE)
 		}
 		if a.Image == "" {
 			return fmt.Errorf("addons.%s.image is required", name)
 		}
-		for label, v := range a.Ports {
-			if _, err := ParsePortSpec(v); err != nil {
+		labels := make([]string, 0, len(a.Ports))
+		for l := range a.Ports {
+			labels = append(labels, l)
+		}
+		sort.Strings(labels)
+		for _, label := range labels {
+			ps, err := ParsePortSpec(a.Ports[label])
+			if err != nil {
 				return fmt.Errorf("addons.%s.ports.%s: %v", name, label, err)
 			}
+			// Under model B (docker.network=ha-addons) HA's own :8123 is
+			// published on the bridge (see dockerargs.BuildRunArgs); any add-on
+			// claiming that host port would collide with it at `docker run`.
+			if c.Network == addonsNetworkName && ps.Host == "8123" {
+				return fmt.Errorf("addons.%s.ports.%s: host port %s:8123 collides with Home Assistant's published :8123", name, label, ps.IP)
+			}
+			key := ps.IP + ":" + ps.Host
+			if owner, taken := published[key]; taken {
+				return fmt.Errorf("addons.%s.ports.%s: host port %s already published by addons.%s", name, label, key, owner)
+			}
+			published[key] = name
 		}
 		if a.DataDir != "" && !strings.HasPrefix(a.DataDir, "/") {
 			return fmt.Errorf("addons.%s.data-dir=%q: must be an absolute container path", name, a.DataDir)
