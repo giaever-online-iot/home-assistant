@@ -2,7 +2,6 @@
 package reconcile
 
 import (
-	"github.com/giaever-online-iot/home-assistant/internal/config"
 	"github.com/giaever-online-iot/home-assistant/internal/dockerargs"
 )
 
@@ -15,6 +14,7 @@ type Docker interface {
 	Run(args []string) error
 	Start(name string) error
 	Pull(image string) error
+	ListByLabel(label string) ([]string, error)
 }
 
 type Action string
@@ -26,15 +26,19 @@ const (
 	ActionRecreated Action = "recreated"
 )
 
-// Reconcile ensures the Home Assistant container matches c. When force is true
-// the container is always recreated (used after pulling a new image).
-func Reconcile(d Docker, c config.Config, force bool) (Action, error) {
-	name := dockerargs.ContainerName
-	want := dockerargs.SpecHash(c)
-	args := dockerargs.BuildRunArgs(c)
-	image := dockerargs.ImageRef(c)
+// ContainerSpec is the desired state of one launcher-managed container —
+// HA Core and add-ons are the same thing at this level.
+type ContainerSpec struct {
+	Name     string
+	Image    string
+	WantHash string
+	RunArgs  []string
+}
 
-	exists, err := d.Exists(name)
+// Reconcile ensures the container matches s. When force is true the
+// container is always recreated (used after pulling a new image).
+func Reconcile(d Docker, s ContainerSpec, force bool) (Action, error) {
+	exists, err := d.Exists(s.Name)
 	if err != nil {
 		return ActionNone, err
 	}
@@ -42,40 +46,40 @@ func Reconcile(d Docker, c config.Config, force bool) (Action, error) {
 		// Pull explicitly (visible progress + bounded retry) BEFORE `docker run`,
 		// rather than relying on run's silent implicit pull, which can wedge for
 		// many minutes with no feedback and no retry.
-		if err := d.Pull(image); err != nil {
+		if err := d.Pull(s.Image); err != nil {
 			return ActionNone, err
 		}
-		if err := d.Run(args); err != nil {
+		if err := d.Run(s.RunArgs); err != nil {
 			return ActionNone, err
 		}
 		return ActionCreated, nil
 	}
 
-	have, err := d.SpecHash(name, dockerargs.SpecHashLabel)
+	have, err := d.SpecHash(s.Name, dockerargs.SpecHashLabel)
 	if err != nil {
 		return ActionNone, err
 	}
-	if force || have != want {
+	if force || have != s.WantHash {
 		// Pull the (possibly new) image before tearing down the running container,
 		// so the swap is quick and the old container stays up while it downloads.
-		if err := d.Pull(image); err != nil {
+		if err := d.Pull(s.Image); err != nil {
 			return ActionNone, err
 		}
-		if err := d.Remove(name); err != nil {
+		if err := d.Remove(s.Name); err != nil {
 			return ActionNone, err
 		}
-		if err := d.Run(args); err != nil {
+		if err := d.Run(s.RunArgs); err != nil {
 			return ActionNone, err
 		}
 		return ActionRecreated, nil
 	}
 
-	running, err := d.Running(name)
+	running, err := d.Running(s.Name)
 	if err != nil {
 		return ActionNone, err
 	}
 	if !running {
-		if err := d.Start(name); err != nil {
+		if err := d.Start(s.Name); err != nil {
 			return ActionNone, err
 		}
 		return ActionStarted, nil
