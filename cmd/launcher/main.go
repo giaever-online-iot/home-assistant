@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func loadConfig() (config.Config, error) {
 	// configure hook and rolls back the whole install. Query each config namespace
 	// and tolerate "unset" so an unconfigured install resolves to all-defaults.
 	merged := map[string]json.RawMessage{}
-	for _, ns := range []string{"image", "docker", "ingress"} {
+	for _, ns := range []string{"image", "docker", "ingress", "addons"} {
 		out, err := exec.Command("snapctl", "get", "-d", ns).Output()
 		if err != nil {
 			continue // namespace not set on this install → defaults apply
@@ -257,12 +258,28 @@ func applyReconcile(cli *docker.Client, cfg config.Config, force bool) error {
 	if err != nil {
 		return err
 	}
-	action, err := reconcile.Reconcile(cli, cfg, force)
-	if err != nil {
-		return err
+	// The bridge must exist before anything that joins it — add-ons always,
+	// HA too under model B (docker.network=ha-addons).
+	if len(cfg.Addons) > 0 || cfg.Network == dockerargs.AddonNetwork {
+		if err := cli.EnsureNetwork(dockerargs.AddonNetwork); err != nil {
+			return fmt.Errorf("ensuring the %s network: %w", dockerargs.AddonNetwork, err)
+		}
 	}
-	fmt.Println("reconcile:", action)
-	return nil
+	var errs []error
+	for _, r := range reconcile.Set(cli, buildContainerSpecs(cfg), force) {
+		if r.Err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Name, r.Err))
+			fmt.Fprintf(os.Stderr, "reconcile %s: error: %v\n", r.Name, r.Err)
+			continue
+		}
+		fmt.Printf("reconcile %s: %s\n", r.Name, r.Action)
+	}
+	// Panels are cosmetic, containers are the substance: ingress problems
+	// must never fail (or flap) the reconcile.
+	if err := applyIngress(cli, cfg, false); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: ingress sync:", err)
+	}
+	return errors.Join(errs...)
 }
 
 // snapshot tars the current config and records the running image digest.

@@ -60,3 +60,6 @@ func runIngress(cli *docker.Client, cfg config.Config, args []string) error {
 		return fmt.Errorf("unknown ingress subcommand %q (use: sync, show)", sub)
 	}
 }
+
+// applyIngress is replaced with the real implementation in the next commit (Task 13).
+func applyIngress(cli *docker.Client, cfg config.Config, force bool) error { return nil }
