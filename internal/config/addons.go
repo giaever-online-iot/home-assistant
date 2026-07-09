@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -144,4 +145,44 @@ func (s AddonSpec) IngressPortSpec() (PortSpec, error) {
 		return PortSpec{}, fmt.Errorf("ingress.port=%q matches no ports.* label", label)
 	}
 	return ParsePortSpec(v)
+}
+
+// Add-on names become container/volume names (ha-addon-<name>); keep them
+// DNS- and docker-safe.
+var addonNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+func (c Config) validateAddons() error {
+	for name, a := range c.Addons {
+		if !addonNameRE.MatchString(name) {
+			return fmt.Errorf("addons.%s: name must match %s", name, addonNameRE)
+		}
+		if a.Image == "" {
+			return fmt.Errorf("addons.%s.image is required", name)
+		}
+		for label, v := range a.Ports {
+			if _, err := ParsePortSpec(v); err != nil {
+				return fmt.Errorf("addons.%s.ports.%s: %v", name, label, err)
+			}
+		}
+		if a.DataDir != "" && !strings.HasPrefix(a.DataDir, "/") {
+			return fmt.Errorf("addons.%s.data-dir=%q: must be an absolute container path", name, a.DataDir)
+		}
+		for label, v := range a.Volumes {
+			if !strings.Contains(v, ":") {
+				return fmt.Errorf("addons.%s.volumes.%s=%q: volume must be host:container", name, label, v)
+			}
+		}
+		if len(a.Devices) > 0 {
+			return fmt.Errorf("addons.%s.devices.*: device passthrough lands in a later release — unset it for now", name)
+		}
+		if a.Ingress != nil {
+			if _, err := a.IngressPortSpec(); err != nil {
+				return fmt.Errorf("addons.%s.ingress: %v", name, err)
+			}
+			if _, taken := c.Ingress[name]; taken {
+				return fmt.Errorf("addons.%s: panel name collides with ingress.%s — rename one of them", name, name)
+			}
+		}
+	}
+	return nil
 }

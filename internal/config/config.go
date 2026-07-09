@@ -158,5 +158,8 @@ func (c Config) Validate() (warnings []string, err error) {
 			warnings = append(warnings, fmt.Sprintf("ingress.%s.work-mode=%q: unknown mode (ingress/iframe/auth/hassio/custom)", name, ing.WorkMode))
 		}
 	}
+	if err := c.validateAddons(); err != nil {
+		return warnings, err
+	}
 	return warnings, nil
 }

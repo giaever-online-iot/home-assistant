@@ -107,3 +107,34 @@ func TestIngressPortSpecErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAddonsRejectsBadInputs(t *testing.T) {
+	bad := []string{
+		`{"addons":{"x":{}}}`, // missing image
+		`{"addons":{"x":{"image":"img","ports":{"ui":"abc"}}}}`,                                                // bad port
+		`{"addons":{"x":{"image":"img","data-dir":"relative"}}}`,                                               // relative data-dir
+		`{"addons":{"x":{"image":"img","volumes":{"v":"/just-a-path"}}}}`,                                      // volume without :
+		`{"addons":{"x":{"image":"img","devices":{"z":"/dev/ttyACM0"}}}}`,                                      // devices reserved
+		`{"addons":{"Bad_Name":{"image":"img"}}}`,                                                              // invalid name
+		`{"addons":{"x":{"image":"img","ingress":{"title":"X"}}}}`,                                             // panel with no ports
+		`{"addons":{"x":{"image":"img","ports":{"a":"1","b":"2"},"ingress":{}}}}`,                              // ambiguous panel port
+		`{"addons":{"x":{"image":"img","ports":{"ui":"80"},"ingress":{}}},"ingress":{"x":{"url":"http://y"}}}`, // name collision
+	}
+	for _, in := range bad {
+		c, err := Parse([]byte(in))
+		if err != nil {
+			t.Fatalf("parse should not fail for %s: %v", in, err)
+		}
+		if _, err := c.Validate(); err == nil {
+			t.Errorf("expected validate error for %s", in)
+		}
+	}
+}
+
+func TestValidateAddonsAcceptsGood(t *testing.T) {
+	in := `{"addons":{"nodered":{"image":"nodered/node-red:latest","ports":{"ui":1880},"data-dir":"/data","ingress":{"title":"Node-RED"}}}}`
+	c, _ := Parse([]byte(in))
+	if _, err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
