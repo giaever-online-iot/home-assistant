@@ -86,3 +86,42 @@ func Reconcile(d Docker, s ContainerSpec, force bool) (Action, error) {
 	}
 	return ActionNone, nil
 }
+
+// ActionRemoved reports an orphan (an add-on container whose config is gone).
+const ActionRemoved Action = "removed"
+
+// Result is one container's reconcile outcome within a Set.
+type Result struct {
+	Name   string
+	Action Action
+	Err    error
+}
+
+// Set converges every spec in order (callers put HA first), then removes
+// labeled add-on containers that are no longer desired. Every spec is
+// attempted — one broken add-on cannot block HA or its siblings. Data
+// volumes are never touched.
+func Set(d Docker, specs []ContainerSpec, force bool) []Result {
+	results := make([]Result, 0, len(specs))
+	desired := make(map[string]bool, len(specs))
+	for _, s := range specs {
+		desired[s.Name] = true
+		act, err := Reconcile(d, s, force)
+		results = append(results, Result{Name: s.Name, Action: act, Err: err})
+	}
+	existing, err := d.ListByLabel(dockerargs.AddonLabelKey)
+	if err != nil {
+		return append(results, Result{Name: "addon-cleanup", Action: ActionNone, Err: err})
+	}
+	for _, name := range existing {
+		if desired[name] {
+			continue
+		}
+		if err := d.Remove(name); err != nil {
+			results = append(results, Result{Name: name, Action: ActionNone, Err: err})
+			continue
+		}
+		results = append(results, Result{Name: name, Action: ActionRemoved})
+	}
+	return results
+}
