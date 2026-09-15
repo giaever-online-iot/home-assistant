@@ -56,6 +56,12 @@ apps:
     command: bin/launcher daemon
     daemon: simple
     restart-condition: always
+    # The unit is ordered only after network.target, so at boot it races
+    # dockerd (its docker calls exit 1 until the socket is up). systemd's
+    # default 100 ms restart delay burns StartLimitBurst (5 in 10 s) and
+    # leaves the unit failed for the whole boot; 10 s keeps retries below
+    # the limit so the daemon comes up on its own once docker is ready.
+    restart-delay: 10s
     plugs: [docker]
   reconcile:
     command: bin/launcher reconcile
