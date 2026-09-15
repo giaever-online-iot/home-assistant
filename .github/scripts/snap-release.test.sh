@@ -43,6 +43,18 @@ check "tty channel-version branch"    "v11.20.0" "$("$SR" channel-version v11.20
 check "tty channel-version inherited" ""         "$("$SR" channel-version latest/beta <"$TTY")"
 check "tty branch-has-revisions yes"  "yes"      "$("$SR" branch-has-revisions v11.20 204 <"$TTY")"
 
+# This snap's version has no `v` prefix (`0.1.0`), unlike the zwave-js-ui fixtures the
+# parser was ported with. Captured verbatim from `snapcraft status home-assistant` on
+# 2026-09-15, when release-on-merge for PR #7 wrongly reported "no revisions in
+# latest/edge/pr7" although revisions 27/28 sat right there.
+BARE="$HERE/fixtures/snapcraft-status-unprefixed.txt"
+check "bare channel-version candidate"  "0.1.0" "$("$SR" channel-version latest/candidate <"$BARE")"
+check "bare channel-version branch"     "0.1.0" "$("$SR" channel-version latest/edge/pr7 <"$BARE")"
+check "bare channel-version stable"     ""      "$("$SR" channel-version latest/stable <"$BARE")"
+check "bare channel-version inherited"  ""      "$("$SR" channel-version latest/edge <"$BARE")"
+check "bare branch-has-revisions yes"   "yes"   "$("$SR" branch-has-revisions latest pr7 <"$BARE")"
+check "bare branch-has-revisions no"    "no"    "$("$SR" branch-has-revisions latest pr99 <"$BARE")"
+
 check "needs-stable-bump major"      "yes" "$("$SR" needs-stable-bump v12.0.0 v11.20.3)"
 check "needs-stable-bump minor"      "no"  "$("$SR" needs-stable-bump v11.20.0 v11.19.1)"
 check "needs-stable-bump empty-cand" "no"  "$("$SR" needs-stable-bump v11.19.1 "")"
