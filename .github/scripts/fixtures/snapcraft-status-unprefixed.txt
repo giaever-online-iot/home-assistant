@@ -1,0 +1,11 @@
+Track    Arch    Channel    Version    Revision    Progress    Expires at
+latest   amd64   stable     -          -           -           -
+latest   amd64   candidate  0.1.0      22          -           -
+latest   amd64   beta       ↑          ↑           -           -
+latest   amd64   edge       ↑          ↑           -           -
+latest   amd64   edge/pr7   0.1.0      28          -           2026-10-15T00:00:00Z
+latest   arm64   stable     -          -           -           -
+latest   arm64   candidate  0.1.0      23          -           -
+latest   arm64   beta       ↑          ↑           -           -
+latest   arm64   edge       ↑          ↑           -           -
+latest   arm64   edge/pr7   0.1.0      27          -           2026-10-15T00:00:00Z

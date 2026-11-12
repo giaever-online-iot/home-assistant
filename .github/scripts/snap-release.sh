@@ -53,12 +53,14 @@ case "$cmd" in
     # Columns: Track Arch Channel Version Revision Progress Expires-at. Robust to BOTH
     # layouts snapcraft emits: captured non-interactively (CI: `$(...)` => no TTY) it
     # repeats Track+Arch on every row; in a terminal it blanks them on continuation rows.
-    # So: carry the last Track token forward, find the Version field (`^v[0-9]`) on each
-    # row, and read the Channel as the field immediately before it.
+    # So: carry the last Track token forward, find the Version field (`^v?[0-9]`) on each
+    # row, and read the Channel as the field immediately before it. The `v` is optional:
+    # this snap's version is `0.1.0`, and Arch/Channel never start with a digit, so the
+    # first digit-led field on a row is always the Version (never the Revision after it).
     ch="${1:-}"
     awk -v t="${ch%%/*}" -v c="${ch#*/}" '
       $1 ~ /^(latest|v[0-9][0-9.]*)$/ { tr = $1 }
-      { for (i = 2; i <= NF; i++) if ($i ~ /^v[0-9]/) { if (tr == t && $(i-1) == c) { print $i; exit } break } }'
+      { for (i = 2; i <= NF; i++) if ($i ~ /^v?[0-9]/) { if (tr == t && $(i-1) == c) { print $i; exit } break } }'
     ;;
   branch-has-revisions)
     # stdin = `snapcraft status`; args = track pr. Re-use channel-version via `bash "$0"`
