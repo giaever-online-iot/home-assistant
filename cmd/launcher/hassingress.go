@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/giaever-online-iot/home-assistant/internal/docker"
+	"github.com/giaever-online-iot/home-assistant/internal/dockerargs"
 )
 
 // parsePluginVersion reads a custom integration's manifest version
@@ -122,4 +127,66 @@ func buildHassIngressScript(configDir, tmpDir, url string, size int64, sha256 st
 		"@DEST@", shellQuote(configDir+"/custom_components/ingress"),
 	)
 	return r.Replace(hiHeader + hiDownload + hiSize + hiSHA + hiUnpack + hiSwap)
+}
+
+const hassIngressManifestPath = "/config/custom_components/ingress/manifest.json"
+
+const hassIngressMarketplacePointer = "To get updates, install Ingress from Home Assistant → Settings → Marketplace (2026.11 and later; accept the one-time risk notice first). It replaces this copy and keeps it up to date. If Home Assistant asks how to configure Ingress, choose YAML."
+
+// Status lines; %s is the installed version.
+const (
+	hassIngressOlder  = `hass-ingress %s is installed; this snap pins ` + hassIngressPinVersion + `. Run "home-assistant.install hass-ingress --force" to upgrade.`
+	hassIngressEqual  = "hass-ingress " + hassIngressPinVersion + " (the pinned version) is already installed."
+	hassIngressNewer  = "hass-ingress %s is installed, newer than the " + hassIngressPinVersion + " this snap pins (probably from the Marketplace); leaving it alone."
+	hassIngressRefuse = "hass-ingress %s is installed, newer than the " + hassIngressPinVersion + " this snap pins; not downgrading. To force the pinned version, remove /config/custom_components/ingress first."
+)
+
+// hassIngressGate decides whether `install hass-ingress` runs (D5, D7, D8). It
+// puts the Marketplace pointer last on 2026.11+ or an unknown HA version. An
+// unknown installed version proceeds, to the generic dir probe without --force.
+func hassIngressGate(c *docker.Client, force bool) (bool, string, error) {
+	haRaw, err := c.ReadFile(dockerargs.ContainerName, haVersionPath)
+	if err != nil {
+		return false, "", err
+	}
+	pointer := ""
+	if year, month, ok := parseHAVersion(haRaw); !ok || marketplaceBuiltIn(year, month) {
+		pointer = hassIngressMarketplacePointer
+	}
+	manifest, err := c.ReadFile(dockerargs.ContainerName, hassIngressManifestPath)
+	if err != nil {
+		return false, "", err
+	}
+	var m struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal([]byte(manifest), &m) != nil {
+		return true, pointer, nil
+	}
+	raw := strings.TrimSpace(m.Version)
+	installed, ok := parsePluginVersion(raw)
+	if !ok {
+		return true, pointer, nil
+	}
+	pin, _ := parsePluginVersion(hassIngressPinVersion)
+	switch cmp := comparePluginVersion(installed, pin); {
+	case cmp > 0 && force:
+		return false, joinNotice(fmt.Sprintf(hassIngressRefuse, raw), pointer), nil
+	case force:
+		return true, pointer, nil
+	case cmp < 0:
+		return false, joinNotice(fmt.Sprintf(hassIngressOlder, raw), pointer), nil
+	case cmp == 0:
+		return false, joinNotice(hassIngressEqual, pointer), nil
+	default:
+		return false, joinNotice(fmt.Sprintf(hassIngressNewer, raw), pointer), nil
+	}
+}
+
+// joinNotice puts the status line first and the pointer, if any, after it.
+func joinNotice(status, pointer string) string {
+	if pointer == "" {
+		return status
+	}
+	return status + "\n" + pointer
 }
