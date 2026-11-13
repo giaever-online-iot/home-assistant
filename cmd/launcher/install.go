@@ -20,6 +20,9 @@ type Recipe struct {
 	Activation string // printed after a successful install (manual UI steps)
 	Installed  string // printed when Dest already exists (no --force)
 	Install    func(*docker.Client) error
+	// Gate, if set, runs after preflight and before the dir probe. proceed=false
+	// prints notice and exits 0 with nothing installed, whatever --force says.
+	Gate func(c *docker.Client) (proceed bool, notice string, err error)
 }
 
 // installRegistry maps an install target to its recipe. Extend this to add more
@@ -28,6 +31,7 @@ var installRegistry = map[string]Recipe{
 	"hacs": {
 		Name: "hacs",
 		Dest: "/config/custom_components/hacs",
+		Gate: hacsGate,
 		Install: func(c *docker.Client) error {
 			// HACS's documented container install: fetch + extract into
 			// /config/custom_components/hacs from inside the running container.
@@ -123,6 +127,18 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Wri
 	// Cheap validation done — only now pay for the (possibly slow) container preflight.
 	if err := preflightContainer(cli, cfg); err != nil {
 		return err
+	}
+	if recipe.Gate != nil {
+		proceed, notice, err := recipe.Gate(cli)
+		if err != nil {
+			return err
+		}
+		if notice != "" {
+			fmt.Fprintln(out, notice)
+		}
+		if !proceed {
+			return nil
+		}
 	}
 	if !force {
 		installed, err := cli.ExecCheck(dockerargs.ContainerName, "test", "-d", recipe.Dest)

@@ -267,3 +267,167 @@ func TestRunInstallIngressAlreadyInstalledWording(t *testing.T) {
 		t.Errorf(".HA_VERSION read %d times for hass-ingress, want 0", n)
 	}
 }
+
+const wantGuidance2026_11_1 = "HACS is built into Home Assistant 2026.11 and later as the Marketplace (found 2026.11.1); nothing to install.\n" +
+	"  1. Home Assistant → Settings → Marketplace (administrator accounts only).\n" +
+	"  2. Accept the one-time risk notice. Until you do, nothing can be installed or updated.\n" +
+	"An existing HACS install is migrated to the Marketplace automatically on the first start of 2026.11 or later."
+
+const wantFrozen = "Note: HACS is frozen: it moved into Home Assistant core (the Marketplace) in 2026.11 and gets no further releases. Upgrading Home Assistant migrates it automatically."
+
+const wantUnknownGarbage = `Could not read Home Assistant's version from /config/.HA_VERSION (got "garbage"); assuming 2026.11 or later.` + "\n" +
+	"HACS is built into Home Assistant 2026.11 and later as the Marketplace; nothing to install.\n" +
+	"  1. Home Assistant → Settings → Marketplace (administrator accounts only).\n" +
+	"  2. Accept the one-time risk notice. Until you do, nothing can be installed or updated.\n" +
+	"An existing HACS install is migrated to the Marketplace automatically on the first start of 2026.11 or later.\n" +
+	`On an older Home Assistant, run the legacy installer by hand: docker exec homeassistant bash -c "wget -O - https://get.hacs.xyz | bash"`
+
+func TestHACSGate(t *testing.T) {
+	cases := []struct {
+		version     string // "" = file missing
+		proceed     bool
+		notice      string // exact, when set
+		noticeHasIn string // substring, when notice is unset
+	}{
+		{version: "2026.11.1", proceed: false, notice: wantGuidance2026_11_1},
+		{version: "2027.1.0", proceed: false, noticeHasIn: "(found 2027.1.0); nothing to install."},
+		{version: "2026.12.0b1", proceed: false, noticeHasIn: "(found 2026.12.0b1)"},
+		{version: "2026.10.3", proceed: true, notice: wantFrozen},
+		{version: "2026.9.0", proceed: true, notice: wantFrozen}, // Review Focus 3 / M6 (G2)
+		{version: "2026.1.0", proceed: true, notice: wantFrozen},
+		{version: "garbage", proceed: false, notice: wantUnknownGarbage},
+		{version: "", proceed: false, noticeHasIn: `(got ""); assuming 2026.11 or later.`},
+	}
+	for _, tc := range cases {
+		proceed, notice, err := hacsGate(docker.NewWithRunner(haFake(tc.version)))
+		if err != nil {
+			t.Errorf("hacsGate(%q) err = %v", tc.version, err)
+			continue
+		}
+		if proceed != tc.proceed {
+			t.Errorf("hacsGate(%q) proceed = %v, want %v", tc.version, proceed, tc.proceed)
+		}
+		if tc.notice != "" && notice != tc.notice {
+			t.Errorf("hacsGate(%q) notice =\n%s\nwant\n%s", tc.version, notice, tc.notice)
+		}
+		if tc.noticeHasIn != "" && !strings.Contains(notice, tc.noticeHasIn) {
+			t.Errorf("hacsGate(%q) notice lacks %q:\n%s", tc.version, tc.noticeHasIn, notice)
+		}
+	}
+}
+
+// Cases a, b, c: on 2026.11+ nothing is probed, run or restarted, whatever
+// --force says and whatever is left in custom_components/hacs.
+func TestRunInstallHACSMarketplace(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		dirs []string
+	}{
+		{"a plain", []string{"hacs"}, nil},
+		{"b --force", []string{"hacs", "--force"}, nil},
+		{"c dir present", []string{"hacs"}, []string{"/config/custom_components/hacs"}},
+	}
+	for _, tc := range cases {
+		f := haFake("2026.11.1", tc.dirs...)
+		out, err := runInstallFake(t, f, tc.args...)
+		if err != nil {
+			t.Errorf("%s: runInstall: %v", tc.name, err)
+			continue
+		}
+		if out != wantGuidance2026_11_1+"\n" {
+			t.Errorf("%s: output =\n%s", tc.name, out)
+		}
+		if strings.Contains(out, "already installed") {
+			t.Errorf("%s: says already installed", tc.name)
+		}
+		if n := f.count(prefixHACS) + f.count(keyRestart) + f.count(prefixProbe); n != 0 {
+			t.Errorf("%s: exec/restart/probe ran %d times, want 0; calls %q", tc.name, n, f.calls)
+		}
+	}
+}
+
+// Case d: below 2026.11 the legacy path runs, with the frozen notice first.
+func TestRunInstallHACSLegacy(t *testing.T) {
+	f := haFake("2026.10.3")
+	out, err := runInstallFake(t, f, "hacs")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if !strings.HasPrefix(out, wantFrozen+"\n") {
+		t.Errorf("output does not start with the frozen notice:\n%s", out)
+	}
+	if n := f.count(prefixHACS); n != 1 {
+		t.Errorf("get.hacs.xyz exec'd %d times, want 1; calls %q", n, f.calls)
+	}
+	if n := f.count(keyRestart); n != 1 {
+		t.Errorf("restart called %d times, want 1", n)
+	}
+	if !strings.HasSuffix(out, installRegistry["hacs"].Activation) {
+		t.Errorf("output does not end with the Activation text:\n%s", out)
+	}
+}
+
+// Case e: --no-restart still works on the legacy path.
+func TestRunInstallHACSLegacyNoRestart(t *testing.T) {
+	f := haFake("2026.10.3")
+	if _, err := runInstallFake(t, f, "hacs", "--no-restart"); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if n := f.count(prefixHACS); n != 1 {
+		t.Errorf("get.hacs.xyz exec'd %d times, want 1", n)
+	}
+	if n := f.count(keyRestart); n != 0 {
+		t.Errorf("restart called %d times, want 0", n)
+	}
+}
+
+// Below 2026.11 with HACS already present: frozen notice, then the hacs text.
+func TestRunInstallHACSLegacyAlreadyInstalled(t *testing.T) {
+	f := haFake("2026.10.3", "/config/custom_components/hacs")
+	out, err := runInstallFake(t, f, "hacs")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if want := wantFrozen + "\n" + installRegistry["hacs"].Installed + "\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if n := f.count(prefixHACS) + f.count(keyRestart); n != 0 {
+		t.Errorf("exec/restart ran %d times, want 0", n)
+	}
+}
+
+// Case f: a missing .HA_VERSION counts as 2026.11+ (D3).
+func TestRunInstallHACSUnknownVersion(t *testing.T) {
+	f := haFake("")
+	out, err := runInstallFake(t, f, "hacs")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if !strings.HasPrefix(out, `Could not read Home Assistant's version from /config/.HA_VERSION (got ""); assuming 2026.11 or later.`+"\n") {
+		t.Errorf("output lacks the could-not-read line:\n%s", out)
+	}
+	if n := f.count(prefixHACS) + f.count(keyRestart) + f.count(prefixProbe); n != 0 {
+		t.Errorf("exec/restart/probe ran %d times, want 0; calls %q", n, f.calls)
+	}
+}
+
+// Review Focus 5: a gate error is returned and nothing runs after it.
+func TestRunInstallGateError(t *testing.T) {
+	installRegistry["gate-err"] = Recipe{
+		Name: "gate-err", Dest: "/config/custom_components/x", Installed: "x is already installed.",
+		Gate: func(*docker.Client) (bool, string, error) { return false, "", errors.New("boom") },
+		Install: func(*docker.Client) error {
+			t.Error("Install ran after a gate error")
+			return nil
+		},
+	}
+	t.Cleanup(func() { delete(installRegistry, "gate-err") })
+	f := haFake("2026.11.1")
+	if _, err := runInstallFake(t, f, "gate-err"); err == nil || err.Error() != "boom" {
+		t.Errorf("err = %v, want boom", err)
+	}
+	if n := f.count(prefixProbe) + f.count(keyRestart); n != 0 {
+		t.Errorf("probe/restart ran %d times, want 0", n)
+	}
+}
