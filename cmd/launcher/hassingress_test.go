@@ -98,6 +98,7 @@ func TestHassIngressGate(t *testing.T) {
 		{"2026.11.1", "", false, true, wantPointer},
 		{"2026.11.1", "", true, true, wantPointer},
 		{"2026.11.1", manifestJSON("1.3.2"), false, false, wantOlder132 + "\n" + wantPointer},
+		{"2026.11.1", `{"version": " 1.3.2 "}`, false, false, wantOlder132 + "\n" + wantPointer}, // Review Focus 3: whitespace is trimmed from the shown version
 		{"2026.11.1", manifestJSON("1.3.2"), true, true, wantPointer},
 		{"2026.11.1", manifestJSON("1.4.0"), false, false, wantEqual + "\n" + wantPointer},
 		{"2026.11.1", manifestJSON("1.4.0"), true, true, wantPointer},
