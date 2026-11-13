@@ -32,3 +32,14 @@ func allDigits(s string) bool {
 	}
 	return true
 }
+
+// HACS moved into Home Assistant core as the Marketplace in 2026.11; on that
+// version and later get.hacs.xyz refuses and the loader blocks the hacs domain.
+const (
+	marketplaceYear  = 2026
+	marketplaceMonth = 11
+)
+
+func marketplaceBuiltIn(year, month int) bool {
+	return year > marketplaceYear || (year == marketplaceYear && month >= marketplaceMonth)
+}

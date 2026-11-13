@@ -88,3 +88,22 @@ func TestParseHAVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestMarketplaceBuiltIn(t *testing.T) {
+	cases := []struct {
+		year, month int
+		want        bool
+	}{
+		{2026, 10, false},
+		{2026, 11, true},
+		{2026, 12, true},
+		{2025, 12, false},
+		{2027, 1, true},
+		{0, 118, false},
+	}
+	for _, tc := range cases {
+		if got := marketplaceBuiltIn(tc.year, tc.month); got != tc.want {
+			t.Errorf("marketplaceBuiltIn(%d, %d) = %v, want %v", tc.year, tc.month, got, tc.want)
+		}
+	}
+}
