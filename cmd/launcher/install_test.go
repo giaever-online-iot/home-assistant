@@ -52,3 +52,39 @@ func TestParseInstallArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHAVersion(t *testing.T) {
+	cases := []struct {
+		raw         string
+		year, month int
+		ok          bool
+	}{
+		{"2026.11.0", 2026, 11, true},
+		{"2026.11.1\n", 2026, 11, true},
+		{"2026.12.0b1", 2026, 12, true},
+		{"2026.12.0.dev20261110", 2026, 12, true},
+		{"2026.11.0.dev20260915", 2026, 11, true},
+		{"2026.10.3", 2026, 10, true},
+		{"2026.1.0", 2026, 1, true},
+		{"2027.1.0", 2027, 1, true},
+		{"0.118.5", 0, 118, true},
+		{"2026.11", 2026, 11, true},
+		{"2026.11.1\r\n", 2026, 11, true}, // Review Focus 1
+		{"  2026.10.3  ", 2026, 10, true}, // Review Focus 1
+		{"", 0, 0, false},
+		{"garbage", 0, 0, false},
+		{"v2026.11.0", 0, 0, false},
+		{"2026", 0, 0, false},
+		{"2026.x.0", 0, 0, false},
+		{".11.0", 0, 0, false},
+		{"+2026.11.0", 0, 0, false}, // Review Focus 2: Atoi would accept the sign
+		{"2026.-1.0", 0, 0, false},  // Review Focus 2
+	}
+	for _, tc := range cases {
+		y, m, ok := parseHAVersion(tc.raw)
+		if y != tc.year || m != tc.month || ok != tc.ok {
+			t.Errorf("parseHAVersion(%q) = (%d, %d, %v), want (%d, %d, %v)",
+				tc.raw, y, m, ok, tc.year, tc.month, tc.ok)
+		}
+	}
+}
