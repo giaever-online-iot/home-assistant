@@ -305,19 +305,21 @@ func TestHACSGate(t *testing.T) {
 		{version: "", proceed: false, noticeHasIn: `(got ""); assuming 2026.11 or later.`},
 	}
 	for _, tc := range cases {
-		proceed, notice, err := hacsGate(docker.NewWithRunner(haFake(tc.version)))
-		if err != nil {
-			t.Errorf("hacsGate(%q) err = %v", tc.version, err)
-			continue
-		}
-		if proceed != tc.proceed {
-			t.Errorf("hacsGate(%q) proceed = %v, want %v", tc.version, proceed, tc.proceed)
-		}
-		if tc.notice != "" && notice != tc.notice {
-			t.Errorf("hacsGate(%q) notice =\n%s\nwant\n%s", tc.version, notice, tc.notice)
-		}
-		if tc.noticeHasIn != "" && !strings.Contains(notice, tc.noticeHasIn) {
-			t.Errorf("hacsGate(%q) notice lacks %q:\n%s", tc.version, tc.noticeHasIn, notice)
+		for _, force := range []bool{false, true} { // hacsGate ignores force (D6, W-5 D5)
+			proceed, notice, err := hacsGate(docker.NewWithRunner(haFake(tc.version)), force)
+			if err != nil {
+				t.Errorf("hacsGate(%q, %v) err = %v", tc.version, force, err)
+				continue
+			}
+			if proceed != tc.proceed {
+				t.Errorf("hacsGate(%q, %v) proceed = %v, want %v", tc.version, force, proceed, tc.proceed)
+			}
+			if tc.notice != "" && notice != tc.notice {
+				t.Errorf("hacsGate(%q, %v) notice =\n%s\nwant\n%s", tc.version, force, notice, tc.notice)
+			}
+			if tc.noticeHasIn != "" && !strings.Contains(notice, tc.noticeHasIn) {
+				t.Errorf("hacsGate(%q, %v) notice lacks %q:\n%s", tc.version, force, tc.noticeHasIn, notice)
+			}
 		}
 	}
 }
@@ -422,7 +424,7 @@ func TestRunInstallHACSUnknownVersion(t *testing.T) {
 func TestRunInstallGateError(t *testing.T) {
 	installRegistry["gate-err"] = Recipe{
 		Name: "gate-err", Dest: "/config/custom_components/x", Installed: "x is already installed.",
-		Gate: func(*docker.Client) (bool, string, error) { return false, "", errors.New("boom") },
+		Gate: func(*docker.Client, bool) (bool, string, error) { return false, "", errors.New("boom") },
 		Install: func(*docker.Client) error {
 			t.Error("Install ran after a gate error")
 			return nil
@@ -435,6 +437,31 @@ func TestRunInstallGateError(t *testing.T) {
 	}
 	if n := f.count(prefixProbe) + f.count(keyRestart); n != 0 {
 		t.Errorf("probe/restart ran %d times, want 0", n)
+	}
+}
+
+// D6: runInstall hands --force to the gate.
+func TestRunInstallPassesForceToGate(t *testing.T) {
+	var got []bool
+	installRegistry["gate-force"] = Recipe{
+		Name: "gate-force", Dest: "/config/custom_components/x", Installed: "x is already installed.",
+		Gate: func(_ *docker.Client, force bool) (bool, string, error) {
+			got = append(got, force)
+			return false, "", nil
+		},
+		Install: func(*docker.Client) error {
+			t.Error("Install ran after the gate said no")
+			return nil
+		},
+	}
+	t.Cleanup(func() { delete(installRegistry, "gate-force") })
+	for _, args := range [][]string{{"gate-force"}, {"gate-force", "--force"}} {
+		if _, err := runInstallFake(t, haFake("2026.11.1"), args...); err != nil {
+			t.Fatalf("runInstall(%v): %v", args, err)
+		}
+	}
+	if want := []bool{false, true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gate saw force = %v, want %v", got, want)
 	}
 }
 

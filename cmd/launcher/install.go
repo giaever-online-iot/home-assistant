@@ -20,9 +20,10 @@ type Recipe struct {
 	Activation string // printed after a successful install (manual UI steps)
 	Installed  string // printed when Dest already exists (no --force)
 	Install    func(*docker.Client) error
-	// Gate, if set, runs after preflight and before the dir probe. proceed=false
-	// prints notice and exits 0 with nothing installed, whatever --force says.
-	Gate func(c *docker.Client) (proceed bool, notice string, err error)
+	// Gate, if set, runs after preflight and before the dir probe, and gets
+	// --force (D6). proceed=false prints notice and exits 0 with nothing
+	// installed; the gate alone decides what --force may override.
+	Gate func(c *docker.Client, force bool) (proceed bool, notice string, err error)
 }
 
 // installRegistry maps an install target to its recipe. Extend this to add more
@@ -129,7 +130,7 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Wri
 		return err
 	}
 	if recipe.Gate != nil {
-		proceed, notice, err := recipe.Gate(cli)
+		proceed, notice, err := recipe.Gate(cli, force)
 		if err != nil {
 			return err
 		}
