@@ -431,3 +431,19 @@ func TestRunInstallGateError(t *testing.T) {
 		t.Errorf("probe/restart ran %d times, want 0", n)
 	}
 }
+
+func TestHACSActivationWording(t *testing.T) {
+	a := installRegistry["hacs"].Activation
+	for _, keep := range []string{
+		"  1. Home Assistant → Settings → Devices & services → Add integration → HACS.\n",
+		"  2. Acknowledge the prompts, then complete the GitHub device authorization.\n",
+	} {
+		if !strings.Contains(a, keep) {
+			t.Errorf("Activation lost step %q", keep)
+		}
+	}
+	want := "HACS gets no further releases; upgrading Home Assistant to 2026.11 or later moves it to the built-in Marketplace.\n"
+	if !strings.HasSuffix(a, want) || strings.Contains(a, "updates itself") {
+		t.Errorf("Activation = %q, want it to end with %q", a, want)
+	}
+}

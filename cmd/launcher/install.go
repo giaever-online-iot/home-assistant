@@ -40,7 +40,7 @@ var installRegistry = map[string]Recipe{
 		Activation: "\nHACS files installed. To finish (one-time, in the UI):\n" +
 			"  1. Home Assistant → Settings → Devices & services → Add integration → HACS.\n" +
 			"  2. Acknowledge the prompts, then complete the GitHub device authorization.\n" +
-			"HACS updates itself from the UI thereafter.\n",
+			"HACS gets no further releases; upgrading Home Assistant to 2026.11 or later moves it to the built-in Marketplace.\n",
 		Installed: "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
 	},
 	"hass-ingress": {
