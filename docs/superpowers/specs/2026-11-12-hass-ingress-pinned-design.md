@@ -477,13 +477,14 @@ Run after deploy with the user. Record command output for each step.
 - **A4.** Every panel from A0 opens from the sidebar (user's eyes).
 - **A5.** `home-assistant.ingress sync` prints **no** mode warning (YAML).
   `home-assistant.install hass-ingress` now prints the *equal* line + the pointer.
-- **A6 (optional, needs the user and is reversible).** Reconfigure Ingress → Local
-  UI in the HA UI (do **not** import panels), then run `home-assistant.ingress sync`.
-  The *ModeOther* warning names `"ui"`. Reconfigure back to YAML, then sync again:
-  no warning, and the panels are back.
-
 Not covered on a device: the fail-closed path (s3-s6 cover it with the real
 script on GNU tools, not busybox) and a fresh box (F2 is settled from code).
+
+**A6 is not run on a device, by decision** (orchestrator, 2026-11-13). A6 would
+have switched lav918's live Ingress entry to Local UI and back to see the
+*ModeOther* warning. The cabin's running config is not to be flipped for a
+test. The warning path is covered by T6 (every status, with exact texts) and T7
+(the check runs in `sync`), and A5 shows the YAML case on the device.
 
 ## Decisions record
 
@@ -569,12 +570,13 @@ script on GNU tools, not busybox) and a fresh box (F2 is settled from code).
   `EnsureInclude`. It is pure and table-testable. As a new file it can't
   conflict with PR #6's edits to `ingress.go` and `derive.go`.
 
-## Open questions (for the orchestrator)
+## Open questions
 
-1. **Merge order with PR #6.** D12 assumes PR #6 lands on `main` before this
-   branch's merge-in, so the auto-sync wiring (T8) is part of this branch. If
-   W-12 ships first, the auto-sync check becomes a follow-up commit on top of
-   PR #6. Which order is planned?
-2. **A6 on lav918.** Flipping the live cabin entry to Local UI and back is
-   reversible, but it touches the user's running config. Should the battery
-   include it, or should the plan rely on T6/T7 plus A5?
+None. Both questions from the first draft are resolved (orchestrator,
+2026-11-13):
+
+1. **Merge order:** PR #6 merges first, then PR #9 (W-5), then this branch. D12
+   stands as written: the merge-in moves the mode check into `applyIngress`, and
+   T8 is part of this branch.
+2. **A6 on lav918:** dropped from the battery. It is listed above as not run on
+   a device, by decision.
