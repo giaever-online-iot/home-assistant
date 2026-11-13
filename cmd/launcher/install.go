@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -107,7 +108,7 @@ func parseInstallArgs(args []string) (target string, noRestart, force bool, err 
 // --no-restart) restarts the container so HA loads it. Argument/target
 // validation happens BEFORE the docker preflight so a usage error fails fast —
 // the preflight's docker calls can be slow.
-func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
+func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Writer) error {
 	target, noRestart, force, err := parseInstallArgs(args)
 	if err != nil {
 		return err
@@ -126,7 +127,7 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
 			return err
 		}
 		if installed {
-			fmt.Printf("%s is already installed (it self-updates from the Home Assistant UI). Use --force to reinstall.\n", recipe.Name)
+			fmt.Fprintf(out, "%s is already installed (it self-updates from the Home Assistant UI). Use --force to reinstall.\n", recipe.Name)
 			return nil
 		}
 	}
@@ -134,11 +135,11 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
 		return fmt.Errorf("installing %s: %w", recipe.Name, err)
 	}
 	if !noRestart {
-		fmt.Printf("Restarting Home Assistant to load %s …\n", recipe.Name)
+		fmt.Fprintf(out, "Restarting Home Assistant to load %s …\n", recipe.Name)
 		if err := cli.Restart(dockerargs.ContainerName); err != nil {
 			return fmt.Errorf("restarting after install: %w", err)
 		}
 	}
-	fmt.Print(recipe.Activation)
+	fmt.Fprint(out, recipe.Activation)
 	return nil
 }

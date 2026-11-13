@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/giaever-online-iot/home-assistant/internal/config"
+	"github.com/giaever-online-iot/home-assistant/internal/docker"
 )
 
 func TestResolveTarget(t *testing.T) {
@@ -105,5 +111,128 @@ func TestMarketplaceBuiltIn(t *testing.T) {
 		if got := marketplaceBuiltIn(tc.year, tc.month); got != tc.want {
 			t.Errorf("marketplaceBuiltIn(%d, %d) = %v, want %v", tc.year, tc.month, got, tc.want)
 		}
+	}
+}
+
+// fakeRunner is a docker.Runner that answers from canned maps (keyed by the
+// args joined with spaces) and records every call the same way.
+type fakeRunner struct {
+	outputs map[string]string
+	errs    map[string]error
+	checks  map[string]bool
+	calls   []string
+}
+
+func (f *fakeRunner) record(args []string) string {
+	k := strings.Join(args, " ")
+	f.calls = append(f.calls, k)
+	return k
+}
+func (f *fakeRunner) Output(args ...string) (string, error) {
+	k := f.record(args)
+	return f.outputs[k], f.errs[k]
+}
+func (f *fakeRunner) Stream(args ...string) error             { f.record(args); return nil }
+func (f *fakeRunner) StreamIn(_ string, args ...string) error { f.record(args); return nil }
+func (f *fakeRunner) Check(args ...string) (bool, error) {
+	k := f.record(args)
+	return f.checks[k], f.errs[k]
+}
+
+// count returns how many recorded calls start with prefix.
+func (f *fakeRunner) count(prefix string) int {
+	n := 0
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+const (
+	keyRunning           = "inspect -f {{.State.Running}} homeassistant"
+	keyVersion           = "exec homeassistant cat /config/.HA_VERSION"
+	prefixProbe          = "exec homeassistant test -d "
+	prefixHACS           = "exec homeassistant bash -c wget -O - https://get.hacs.xyz | bash"
+	prefixIngressInstall = "exec homeassistant bash -c set -e;"
+	keyRestart           = "restart homeassistant"
+)
+
+// haFake is a running homeassistant container. version is the content of
+// /config/.HA_VERSION ("" = the file is missing, so cat fails); dirs are the
+// directories that `test -d` finds.
+func haFake(version string, dirs ...string) *fakeRunner {
+	f := &fakeRunner{
+		outputs: map[string]string{keyRunning: "true"},
+		errs:    map[string]error{},
+		checks:  map[string]bool{},
+	}
+	if version == "" {
+		f.errs[keyVersion] = errors.New("exit status 1")
+	} else {
+		f.outputs[keyVersion] = version
+	}
+	for _, d := range dirs {
+		f.checks[prefixProbe+d] = true
+	}
+	return f
+}
+
+func runInstallFake(t *testing.T, f *fakeRunner, args ...string) (string, error) {
+	t.Helper()
+	var buf bytes.Buffer
+	err := runInstall(docker.NewWithRunner(f), config.Config{}, args, &buf)
+	return buf.String(), err
+}
+
+func TestRunInstallIngressFresh(t *testing.T) {
+	f := haFake("2026.11.1")
+	out, err := runInstallFake(t, f, "hass-ingress")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if n := f.count(prefixIngressInstall); n != 1 {
+		t.Errorf("ingress install exec'd %d times, want 1; calls %q", n, f.calls)
+	}
+	if n := f.count(keyRestart); n != 1 {
+		t.Errorf("restart called %d times, want 1", n)
+	}
+	if !strings.Contains(out, "Restarting Home Assistant to load hass-ingress") {
+		t.Errorf("output lacks the restart line:\n%s", out)
+	}
+	if !strings.HasSuffix(out, installRegistry["hass-ingress"].Activation) {
+		t.Errorf("output does not end with the Activation text:\n%s", out)
+	}
+}
+
+func TestRunInstallIngressNoRestart(t *testing.T) {
+	f := haFake("2026.11.1")
+	out, err := runInstallFake(t, f, "hass-ingress", "--no-restart")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if n := f.count(prefixIngressInstall); n != 1 {
+		t.Errorf("ingress install exec'd %d times, want 1", n)
+	}
+	if n := f.count(keyRestart); n != 0 {
+		t.Errorf("restart called %d times, want 0", n)
+	}
+	if !strings.HasSuffix(out, installRegistry["hass-ingress"].Activation) {
+		t.Errorf("output does not end with the Activation text:\n%s", out)
+	}
+}
+
+func TestRunInstallIngressAlreadyInstalled(t *testing.T) {
+	f := haFake("2026.11.1", "/config/custom_components/ingress")
+	out, err := runInstallFake(t, f, "hass-ingress")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if n := f.count(prefixIngressInstall) + f.count(keyRestart); n != 0 {
+		t.Errorf("install/restart ran %d times, want 0; calls %q", n, f.calls)
+	}
+	if !strings.Contains(out, "hass-ingress is already installed") {
+		t.Errorf("output lacks the already-installed line:\n%s", out)
 	}
 }
