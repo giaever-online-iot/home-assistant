@@ -87,3 +87,36 @@ func indexOfCall(calls []string, prefix string) int {
 	}
 	return -1
 }
+
+// T8: an unchanged auto-sync (ShouldSync says no) still checks the mode when
+// hass_ingress is installed, and still neither writes nor restarts (D11, D12).
+func TestApplyIngressAutoSyncChecksMode(t *testing.T) {
+	cfg := config.Config{Ingress: map[string]config.IngressSpec{"zui": {URL: "http://localhost:8091", Title: "Z-Wave JS UI"}}}
+	cases := []struct {
+		name  string
+		dir   bool // custom_components/ingress exists
+		reads int
+	}{
+		{"installed", true, 1},
+		{"not installed", false, 0},
+	}
+	for _, tc := range cases {
+		var dirs []string
+		if tc.dir {
+			dirs = []string{ingressDir}
+		}
+		f := haFake("2026.11.1", dirs...)
+		f.outputs[keyStorage] = storageUI
+		f.outputs["exec homeassistant cat "+ingressFilePath] = ingress.Render(ingress.MergedEntries(cfg))
+		if err := applyIngress(docker.NewWithRunner(f), cfg, false); err != nil {
+			t.Errorf("%s: applyIngress: %v", tc.name, err)
+			continue
+		}
+		if n := f.count(keyStorage); n != tc.reads {
+			t.Errorf("%s: storage read %d times, want %d; calls %q", tc.name, n, tc.reads, f.calls)
+		}
+		if n := f.count(keyWriteIngress) + f.count(keyRestart); n != 0 {
+			t.Errorf("%s: write/restart ran %d times on an unchanged auto-sync, want 0", tc.name, n)
+		}
+	}
+}
