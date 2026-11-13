@@ -76,7 +76,7 @@ func Set(d Docker, specs []ContainerSpec, force bool) ([]Result, error)  // Resu
 
 - `Reconcile` keeps today's exact ladder (exists? → pull+run; hash differs or force? → pull **then** remove+run, preserving the pull-before-remove downtime invariant; stopped? → start).
 - `Set` reconciles HA **first**, then add-ons sorted by name. It then lists containers carrying the discovery label and removes any not in the desired set (**orphans**). Data volumes are never removed.
-- **Failure isolation:** every spec is attempted; per-container errors are collected and reported together. A broken add-on image cannot block HA or its siblings. Exit code reflects container convergence only.
+- **Failure isolation:** every spec is attempted; per-container errors are collected and reported together. A broken add-on image cannot block HA or its siblings. Exit code reflects container convergence only. The daemon treats add-on-only failures as warnings — HA alone governs service health (a broken add-on must not flap the snap service); the `reconcile`/`update` CLI commands still exit non-zero on any container error.
 - Existing HA reconcile tests keep passing with unchanged behavior (they adapt to construct a `ContainerSpec`).
 
 ### 5. Ingress derivation + auto-sync (`internal/ingress`)

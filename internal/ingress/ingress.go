@@ -23,8 +23,8 @@ const includeLine = "ingress: !include " + IncludeFile
 // sorted by name for stable, diff-friendly output.
 func Render(entries map[string]config.IngressSpec) string {
 	var b strings.Builder
-	b.WriteString("# Managed by the home-assistant snap — edit via `snap set home-assistant ingress.*`,\n")
-	b.WriteString("# then run `home-assistant.ingress sync`. Do not edit by hand.\n")
+	b.WriteString("# Managed by the home-assistant snap — panels come from `snap set home-assistant ingress.*` and `addons.*`.\n")
+	b.WriteString("# Synced automatically on reconcile (manual: `home-assistant.ingress sync`). Do not edit by hand.\n")
 	if len(entries) == 0 {
 		b.WriteString("{}\n")
 		return b.String()

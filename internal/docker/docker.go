@@ -176,3 +176,25 @@ func (c *Client) ImageExists(image string) (bool, error) {
 	}
 	return true, nil
 }
+
+// EnsureNetwork creates the named user-defined bridge if it does not exist.
+// Idempotent: an existing network is left untouched.
+func (c *Client) EnsureNetwork(name string) error {
+	if _, err := c.r.Output("network", "inspect", name); err == nil {
+		return nil
+	}
+	return c.r.Stream("network", "create", name)
+}
+
+// ListByLabel returns the names of all containers (running or not) carrying
+// the given label key — used to find add-on containers whose config is gone.
+func (c *Client) ListByLabel(label string) ([]string, error) {
+	out, err := c.r.Output("ps", "-a", "--filter", "label="+label, "--format", "{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}

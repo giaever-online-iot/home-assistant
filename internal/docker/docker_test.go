@@ -168,3 +168,40 @@ func TestReadFile(t *testing.T) {
 		t.Errorf("absent: %q,%v want '',nil", out, err)
 	}
 }
+
+func TestEnsureNetwork(t *testing.T) {
+	// Present: inspect succeeds → no create call.
+	f := &fakeRunner{outputs: map[string]string{"network inspect ha-addons": "[{}]"}}
+	c := NewWithRunner(f)
+	if err := c.EnsureNetwork("ha-addons"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Errorf("existing network must not be created again: %v", f.calls)
+	}
+	// Absent: inspect fails → network create streamed.
+	f = &fakeRunner{errs: map[string]error{"network inspect ha-addons": errors.New("not found")}}
+	c = NewWithRunner(f)
+	if err := c.EnsureNetwork("ha-addons"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 2 || strings.Join(f.calls[1], " ") != "network create ha-addons" {
+		t.Errorf("expected network create, got %v", f.calls)
+	}
+}
+
+func TestListByLabel(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"ps -a --filter label=io.giaever.home-assistant.addon --format {{.Names}}": "ha-addon-a\nha-addon-b",
+	}}
+	c := NewWithRunner(f)
+	got, err := c.ListByLabel("io.giaever.home-assistant.addon")
+	if err != nil || len(got) != 2 || got[0] != "ha-addon-a" || got[1] != "ha-addon-b" {
+		t.Errorf("ListByLabel = %v, %v", got, err)
+	}
+	// No matches → empty output → nil slice, no error.
+	c = NewWithRunner(&fakeRunner{})
+	if got, err := c.ListByLabel("io.giaever.home-assistant.addon"); err != nil || got != nil {
+		t.Errorf("empty: %v, %v", got, err)
+	}
+}

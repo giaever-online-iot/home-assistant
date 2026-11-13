@@ -43,6 +43,11 @@ func BuildRunArgs(c config.Config) []string {
 		"--label", SpecHashLabel + "=" + SpecHash(c),
 		"--network=" + c.Network,
 	}
+	// On the add-ons bridge HA loses the host netns; without this HA's own
+	// UI would be unreachable from the LAN.
+	if c.Network == AddonNetwork {
+		args = append(args, "-p", "8123:8123")
+	}
 	if c.Privileged {
 		args = append(args, "--privileged")
 	}
