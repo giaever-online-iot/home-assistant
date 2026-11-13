@@ -34,6 +34,9 @@ func runIngress(cli *docker.Client, cfg config.Config, args []string) error {
 		if err := preflightContainer(cli, cfg); err != nil {
 			return err
 		}
+		if len(cfg.Ingress) > 0 {
+			warnIngressMode(cli, os.Stderr)
+		}
 		if err := cli.WriteFile(dockerargs.ContainerName, ingressFilePath, body); err != nil {
 			return fmt.Errorf("writing %s: %w", ingressFilePath, err)
 		}
