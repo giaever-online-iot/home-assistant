@@ -70,11 +70,15 @@ const (
 
 // The install script, in segments. @NAME@ placeholders are filled, shell-quoted,
 // by buildHassIngressScript. Nothing under @CC@ is written before hiSwap (D2).
+// The cleanup trap puts the old copy back if $dest is absent, so a signal
+// between hiSwap's two renames cannot lose it (D3). $dest is set in hiSwap so
+// that /config is not named before the checks.
 const (
 	hiHeader = `set -eu
 work=$(mktemp -d @WORK@)
 stage=""
-cleanup() { rm -rf "$work"; [ -z "$stage" ] || rm -rf "$stage"; }
+dest=""
+cleanup() { rm -rf "$work"; if [ -n "$stage" ]; then [ -e "$dest" ] || [ ! -e "$stage/old" ] || mv "$stage/old" "$dest"; rm -rf "$stage"; fi; }
 trap cleanup EXIT
 `
 	hiDownload = `wget -qO "$work/ingress.zip" @URL@ || { echo "hass-ingress: download failed: "@URL@ >&2; exit 1; }
@@ -89,7 +93,8 @@ trap cleanup EXIT
 unzip -q "$work/ingress.zip" -d "$work/ingress"
 [ -f "$work/ingress/manifest.json" ] || { echo "hass-ingress: manifest.json not at the zip root; nothing changed" >&2; exit 1; }
 `
-	hiSwap = `mkdir -p @CC@
+	hiSwap = `dest=@DEST@
+mkdir -p @CC@
 stage=$(mktemp -d @STAGE@)
 cp -r "$work/ingress" "$stage/new"
 if [ -e @DEST@ ]; then

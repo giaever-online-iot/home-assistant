@@ -78,8 +78,15 @@ func serveZip(t *testing.T, body []byte) *httptest.Server {
 // stderr and error. no_proxy keeps a host proxy away from the local server.
 func runScript(t *testing.T, configDir, tmpDir, url string, size int64, sha string) (string, error) {
 	t.Helper()
+	return runScriptEnv(t, configDir, tmpDir, url, size, sha)
+}
+
+// runScriptEnv is runScript with extra environment entries (a later PATH wins).
+func runScriptEnv(t *testing.T, configDir, tmpDir, url string, size int64, sha string, extraEnv ...string) (string, error) {
+	t.Helper()
 	cmd := exec.Command("bash", "-c", buildHassIngressScript(configDir, tmpDir, url, size, sha))
 	cmd.Env = append(os.Environ(), "no_proxy=127.0.0.1,localhost", "NO_PROXY=127.0.0.1,localhost")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -223,6 +230,61 @@ func TestHassIngressScriptFailsClosed(t *testing.T) {
 				t.Errorf("manifest.json appeared in the existing copy (err %v)", err)
 			}
 			checkNoResidue(t, configDir, tmpDir, before)
+		})
+	}
+}
+
+// fakeMvPATH returns a PATH whose first entry holds an `mv` stand-in. The
+// stand-in's body gets $real, the real mv, as a shell variable.
+func fakeMvPATH(t *testing.T, body string) string {
+	t.Helper()
+	real, err := exec.LookPath("mv")
+	if err != nil {
+		t.Skipf("mv not found: %v", err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/bash\nreal=" + shellQuote(real) + "\n" + body
+	if err := os.WriteFile(filepath.Join(bin, "mv"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return "PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+// s9, s10: an interrupted or failed swap puts the old copy back (D3).
+func TestHassIngressScriptSwapInterrupted(t *testing.T) {
+	requireScriptTools(t)
+	body := makeZip(t, map[string]string{"manifest.json": testManifest})
+	srv := serveZip(t, body)
+	cases := []struct {
+		name, mv, wantErr string
+	}{
+		// TERM hits the script's bash right after the old copy is moved aside.
+		{"s9 TERM between the two renames", `"$real" "$@" || exit $?
+case "${@: -1}" in */old) kill -TERM $PPID ;; esac
+`, ""},
+		// The move of the new copy into place fails, so the rollback runs.
+		{"s10 move into place fails", `case "$1" in */new) exit 1 ;; esac
+exec "$real" "$@"
+`, "previous copy restored"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir, tmpDir := t.TempDir(), t.TempDir()
+			writeOld(t, configDir)
+			stderr, err := runScriptEnv(t, configDir, tmpDir, srv.URL+"/ingress.zip", int64(len(body)), sha256Hex(body), fakeMvPATH(t, tc.mv))
+			if err == nil {
+				t.Fatalf("script succeeded, want failure; stderr: %s", stderr)
+			}
+			if !strings.Contains(stderr, tc.wantErr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr, tc.wantErr)
+			}
+			dest := filepath.Join(configDir, "custom_components", "ingress")
+			if got := readFile(t, filepath.Join(dest, "old.txt")); got != "old" {
+				t.Errorf("old.txt = %q, want old", got)
+			}
+			if _, err := os.Stat(filepath.Join(dest, "manifest.json")); !os.IsNotExist(err) {
+				t.Errorf("manifest.json of the new copy appeared in the dest (err %v)", err)
+			}
 		})
 	}
 }
