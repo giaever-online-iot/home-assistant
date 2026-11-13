@@ -155,7 +155,7 @@ const (
 	keyVersion           = "exec homeassistant cat /config/.HA_VERSION"
 	prefixProbe          = "exec homeassistant test -d "
 	prefixHACS           = "exec homeassistant bash -c wget -O - https://get.hacs.xyz | bash"
-	prefixIngressInstall = "exec homeassistant bash -c set -e;"
+	prefixIngressInstall = "exec homeassistant bash -c set -eu"
 	keyRestart           = "restart homeassistant"
 )
 
@@ -240,7 +240,7 @@ func TestRunInstallIngressAlreadyInstalled(t *testing.T) {
 func TestInstalledWording(t *testing.T) {
 	want := map[string]string{
 		"hacs":         "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
-		"hass-ingress": `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
+		"hass-ingress": wantIngressInstalled,
 	}
 	if len(want) != len(installRegistry) {
 		t.Errorf("installRegistry has %d recipes, want map covers %d; add the new recipe's Installed text to want", len(installRegistry), len(want))
@@ -252,25 +252,6 @@ func TestInstalledWording(t *testing.T) {
 		if r.Installed != want[name] {
 			t.Errorf("%s Installed = %q, want %q", name, r.Installed, want[name])
 		}
-	}
-}
-
-// Case g: the per-recipe text replaces the shared self-update claim, and a
-// recipe without a Gate never reads .HA_VERSION.
-func TestRunInstallIngressAlreadyInstalledWording(t *testing.T) {
-	f := haFake("2026.11.1", "/config/custom_components/ingress")
-	out, err := runInstallFake(t, f, "hass-ingress")
-	if err != nil {
-		t.Fatalf("runInstall: %v", err)
-	}
-	if want := installRegistry["hass-ingress"].Installed + "\n"; out != want {
-		t.Errorf("output = %q, want %q", out, want)
-	}
-	if !strings.Contains(out, "--force") || strings.Contains(out, "self-update") {
-		t.Errorf("output must point at --force and not claim a self-update: %q", out)
-	}
-	if n := f.count(keyVersion); n != 0 {
-		t.Errorf(".HA_VERSION read %d times for hass-ingress, want 0", n)
 	}
 }
 
@@ -478,5 +459,94 @@ func TestHACSActivationWording(t *testing.T) {
 	want := "HACS gets no further releases; upgrading Home Assistant to 2026.11 or later moves it to the built-in Marketplace.\n"
 	if !strings.HasSuffix(a, want) || strings.Contains(a, "updates itself") {
 		t.Errorf("Activation = %q, want it to end with %q", a, want)
+	}
+}
+
+const (
+	wantIngressInstalled = `hass-ingress is already installed, but its version could not be read. Run "home-assistant.install hass-ingress --force" to replace it with the pinned 1.4.0.`
+	ingressRestartLine   = "Restarting Home Assistant to load hass-ingress …\n"
+	ingressDir           = "/config/custom_components/ingress"
+)
+
+// T3 a-j, l: what runInstall prints and runs for each installed version.
+func TestRunInstallHassIngressPinned(t *testing.T) {
+	act := installRegistry["hass-ingress"].Activation
+	cases := []struct {
+		name                  string
+		ha, manifest          string // "" = the file is missing
+		dir                   bool   // custom_components/ingress exists
+		args                  []string
+		out                   string // exact output
+		probe, exec, restarts int
+	}{
+		{"a fresh", "2026.11.1", "", false, []string{"hass-ingress"}, wantPointer + "\n" + ingressRestartLine + act, 1, 1, 1},
+		{"b older", "2026.11.1", manifestJSON("1.3.2"), true, []string{"hass-ingress"}, wantOlder132 + "\n" + wantPointer + "\n", 0, 0, 0},
+		{"c older --force", "2026.11.1", manifestJSON("1.3.2"), true, []string{"hass-ingress", "--force"}, wantPointer + "\n" + ingressRestartLine + act, 0, 1, 1},
+		{"d equal", "2026.11.1", manifestJSON("1.4.0"), true, []string{"hass-ingress"}, wantEqual + "\n" + wantPointer + "\n", 0, 0, 0},
+		{"e equal --force", "2026.11.1", manifestJSON("1.4.0"), true, []string{"hass-ingress", "--force"}, wantPointer + "\n" + ingressRestartLine + act, 0, 1, 1},
+		{"f newer", "2026.11.1", manifestJSON("1.4.2"), true, []string{"hass-ingress"}, wantNewer142 + "\n" + wantPointer + "\n", 0, 0, 0},
+		{"g newer --force", "2026.11.1", manifestJSON("1.4.2"), true, []string{"hass-ingress", "--force"}, wantRefuse142 + "\n" + wantPointer + "\n", 0, 0, 0},
+		{"h dir without manifest", "2026.11.1", "", true, []string{"hass-ingress"}, wantPointer + "\n" + wantIngressInstalled + "\n", 1, 0, 0},
+		{"i fresh on 2026.10", "2026.10.3", "", false, []string{"hass-ingress"}, ingressRestartLine + act, 1, 1, 1},
+		{"j fresh, HA version unknown", "", "", false, []string{"hass-ingress"}, wantPointer + "\n" + ingressRestartLine + act, 1, 1, 1},
+		{"l older --force --no-restart", "2026.11.1", manifestJSON("1.3.2"), true, []string{"hass-ingress", "--force", "--no-restart"}, wantPointer + "\n" + act, 0, 1, 0}, // Review Focus 5
+	}
+	for _, tc := range cases {
+		var dirs []string
+		if tc.dir {
+			dirs = []string{ingressDir}
+		}
+		f := withManifest(haFake(tc.ha, dirs...), tc.manifest)
+		out, err := runInstallFake(t, f, tc.args...)
+		if err != nil {
+			t.Errorf("%s: runInstall: %v", tc.name, err)
+			continue
+		}
+		if out != tc.out {
+			t.Errorf("%s: output =\n%q\nwant\n%q", tc.name, out, tc.out)
+		}
+		if tc.ha == "2026.10.3" && strings.Contains(out, "Marketplace") {
+			t.Errorf("%s: mentions the Marketplace below 2026.11", tc.name)
+		}
+		if p, e, r := f.count(prefixProbe), f.count(prefixIngressInstall), f.count(keyRestart); p != tc.probe || e != tc.exec || r != tc.restarts {
+			t.Errorf("%s: probe/exec/restart = %d/%d/%d, want %d/%d/%d; calls %q", tc.name, p, e, r, tc.probe, tc.exec, tc.restarts, f.calls)
+		}
+	}
+}
+
+// T3 k: the exec'd script is the pinned one, and verifies before it names /config (D2).
+func TestRunInstallHassIngressScriptOrder(t *testing.T) {
+	f := haFake("2026.11.1")
+	if _, err := runInstallFake(t, f, "hass-ingress"); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	const execPrefix = "exec homeassistant bash -c "
+	var script string
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefixIngressInstall) {
+			script = strings.TrimPrefix(c, execPrefix)
+		}
+	}
+	if script != hassIngressScript("/config", "/tmp") {
+		t.Fatalf("exec'd script is not hassIngressScript(\"/config\", \"/tmp\"):\n%s", script)
+	}
+	for _, want := range []string{hassIngressPinURL, hassIngressPinSHA256} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q", want)
+		}
+	}
+	sha, cfg := strings.Index(script, "sha256sum -c"), strings.Index(script, "/config")
+	if sha < 0 || cfg < 0 || sha > cfg {
+		t.Errorf("sha256sum -c at %d, first /config at %d: the check must come first", sha, cfg)
+	}
+}
+
+func TestHassIngressActivationWording(t *testing.T) {
+	want := "\nhass_ingress 1.4.0 installed (pinned release, sha256 verified). Next:\n" +
+		"  1. Define panels:  snap set home-assistant ingress.<name>.url=http://localhost:<port> ingress.<name>.title=\"<Title>\"\n" +
+		"  2. Apply:          home-assistant.ingress sync\n" +
+		"Each panel then appears in the Home Assistant sidebar.\n"
+	if got := installRegistry["hass-ingress"].Activation; got != want {
+		t.Errorf("Activation =\n%q\nwant\n%q", got, want)
 	}
 }
