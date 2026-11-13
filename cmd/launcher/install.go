@@ -18,6 +18,7 @@ type Recipe struct {
 	Name       string
 	Dest       string
 	Activation string // printed after a successful install (manual UI steps)
+	Installed  string // printed when Dest already exists (no --force)
 	Install    func(*docker.Client) error
 }
 
@@ -36,6 +37,7 @@ var installRegistry = map[string]Recipe{
 			"  1. Home Assistant → Settings → Devices & services → Add integration → HACS.\n" +
 			"  2. Acknowledge the prompts, then complete the GitHub device authorization.\n" +
 			"HACS updates itself from the UI thereafter.\n",
+		Installed: "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
 	},
 	"hass-ingress": {
 		Name: "hass-ingress",
@@ -61,6 +63,7 @@ var installRegistry = map[string]Recipe{
 			"  1. Define panels:  snap set home-assistant ingress.<name>.url=http://localhost:<port> ingress.<name>.title=\"<Title>\"\n" +
 			"  2. Apply:          home-assistant.ingress sync\n" +
 			"Each panel then appears in the Home Assistant sidebar.\n",
+		Installed: `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
 	},
 }
 
@@ -127,7 +130,7 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Wri
 			return err
 		}
 		if installed {
-			fmt.Fprintf(out, "%s is already installed (it self-updates from the Home Assistant UI). Use --force to reinstall.\n", recipe.Name)
+			fmt.Fprintln(out, recipe.Installed)
 			return nil
 		}
 	}

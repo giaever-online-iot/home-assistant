@@ -236,3 +236,34 @@ func TestRunInstallIngressAlreadyInstalled(t *testing.T) {
 		t.Errorf("output lacks the already-installed line:\n%s", out)
 	}
 }
+
+func TestInstalledWording(t *testing.T) {
+	want := map[string]string{
+		"hacs":         "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
+		"hass-ingress": `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
+	}
+	for name, r := range installRegistry {
+		if r.Installed != want[name] {
+			t.Errorf("%s Installed = %q, want %q", name, r.Installed, want[name])
+		}
+	}
+}
+
+// Case g: the per-recipe text replaces the shared self-update claim, and a
+// recipe without a Gate never reads .HA_VERSION.
+func TestRunInstallIngressAlreadyInstalledWording(t *testing.T) {
+	f := haFake("2026.11.1", "/config/custom_components/ingress")
+	out, err := runInstallFake(t, f, "hass-ingress")
+	if err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+	if want := installRegistry["hass-ingress"].Installed + "\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if !strings.Contains(out, "--force") || strings.Contains(out, "self-update") {
+		t.Errorf("output must point at --force and not claim a self-update: %q", out)
+	}
+	if n := f.count(keyVersion); n != 0 {
+		t.Errorf(".HA_VERSION read %d times for hass-ingress, want 0", n)
+	}
+}
