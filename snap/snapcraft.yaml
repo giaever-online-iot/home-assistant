@@ -28,6 +28,20 @@ description: |
     snap set home-assistant ingress.zwave.url=http://localhost:8091 ingress.zwave.title="Z-Wave JS UI"
     home-assistant.ingress sync
 
+  Run add-on containers (network-only) beside Home Assistant, with an
+  optional sidebar panel (requires `home-assistant.install hass-ingress`):
+
+    snap set home-assistant \
+      addons.nodered.image=nodered/node-red:latest \
+      addons.nodered.ports.ui=1880 \
+      addons.nodered.data-dir=/data \
+      addons.nodered.ingress.title="Node-RED"
+
+  Ports bind to 127.0.0.1 by default (reachable through the sidebar only);
+  publish LAN-wide with an explicit ip, e.g.
+  addons.mqtt.ports.broker=0.0.0.0:1883:1883. Unsetting an add-on removes
+  its container but keeps its data volume (ha-addon-<name>-data).
+
 license: Apache-2.0
 contact: https://github.com/giaever-online-iot/home-assistant/issues
 issues: https://github.com/giaever-online-iot/home-assistant/issues
