@@ -242,7 +242,13 @@ func TestInstalledWording(t *testing.T) {
 		"hacs":         "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
 		"hass-ingress": `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
 	}
+	if len(want) != len(installRegistry) {
+		t.Errorf("installRegistry has %d recipes, want map covers %d; add the new recipe's Installed text to want", len(installRegistry), len(want))
+	}
 	for name, r := range installRegistry {
+		if r.Installed == "" {
+			t.Errorf("%s: Installed is empty; every recipe must set it (D7)", name)
+		}
 		if r.Installed != want[name] {
 			t.Errorf("%s Installed = %q, want %q", name, r.Installed, want[name])
 		}
