@@ -49,6 +49,9 @@ func TestCursorFile(t *testing.T) {
 	if got := readCursor(path); got == nil || !got.Equal(want) {
 		t.Errorf("cursor round trip = %v, want %v", got, want)
 	}
+	if ents, err := os.ReadDir(filepath.Dir(path)); err != nil || len(ents) != 1 {
+		t.Errorf("a cursor write must leave only the cursor file, got %v (err %v)", ents, err)
+	}
 	if readCursor("") != nil {
 		t.Error(`path "" (no SNAP_COMMON) must read as nil`)
 	}

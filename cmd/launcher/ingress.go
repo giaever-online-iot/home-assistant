@@ -74,14 +74,18 @@ func applyIngress(cli *docker.Client, cfg config.Config, force bool, w io.Writer
 			warnIngressMode(cli, w)
 		}
 	}
-	restart, err := syncIngressFiles(cli, cfg, force, w)
+	restart, wrote, err := syncIngressFiles(cli, cfg, force, w)
 	if err != nil {
 		return false, err
 	}
 	if !restart {
 		return false, nil
 	}
-	fmt.Fprintf(w, "Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
+	if wrote {
+		fmt.Fprintf(w, "Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
+	} else {
+		fmt.Fprintln(w, "Added the ingress include; restarting Home Assistant…")
+	}
 	return true, cli.Restart(dockerargs.ContainerName)
 }
 
@@ -90,8 +94,9 @@ func applyIngress(cli *docker.Client, cfg config.Config, force bool, w io.Writer
 // never restarts HA itself, so it can also run in the old container just
 // before a recreate (D4). force writes the file and asks for a restart even
 // when nothing changed. The include line is checked whenever there is at
-// least one panel, even when the file is unchanged (D8). Warnings go to w.
-func syncIngressFiles(cli *docker.Client, cfg config.Config, force bool, w io.Writer) (restart bool, err error) {
+// least one panel, even when the file is unchanged (D8). wrote reports whether
+// snap-ingress.yaml itself was written. Warnings go to w.
+func syncIngressFiles(cli *docker.Client, cfg config.Config, force bool, w io.Writer) (restart, wrote bool, err error) {
 	entries := ingress.MergedEntries(cfg)
 	body := ingress.Render(entries)
 	write := true
@@ -102,17 +107,17 @@ func syncIngressFiles(cli *docker.Client, cfg config.Config, force bool, w io.Wr
 	}
 	if write {
 		if err := cli.WriteFile(dockerargs.ContainerName, ingressFilePath, body); err != nil {
-			return false, fmt.Errorf("writing %s: %w", ingressFilePath, err)
+			return false, false, fmt.Errorf("writing %s: %w", ingressFilePath, err)
 		}
 	}
 	if len(entries) > 0 {
 		added, err := ensureInclude(cli, w)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		restart = restart || added
 	}
-	return restart, nil
+	return restart, write, nil
 }
 
 // ensureInclude adds `ingress: !include snap-ingress.yaml` to
@@ -162,10 +167,10 @@ func ensureInclude(cli *docker.Client, w io.Writer) (changed bool, err error) {
 // sync then writes and restarts as before (D5).
 func preSwapIngress(cli *docker.Client, cfg config.Config, w io.Writer) {
 	if running, _ := cli.Running(dockerargs.ContainerName); !running {
-		fmt.Fprintln(w, "note: Home Assistant is not running, so the ingress files are written after it is recreated (one extra restart)")
+		fmt.Fprintln(w, "note: Home Assistant is not running, so the ingress files are written after it is recreated instead")
 		return
 	}
-	if _, err := syncIngressFiles(cli, cfg, false, io.Discard); err != nil {
+	if _, _, err := syncIngressFiles(cli, cfg, false, io.Discard); err != nil {
 		fmt.Fprintf(w, "note: could not write the ingress files before recreating Home Assistant (%v); they are written after the swap instead\n", err)
 	}
 }

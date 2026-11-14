@@ -6,8 +6,10 @@ import (
 )
 
 // HostGatewayName is the name Home Assistant uses for the host under model B
-// (docker.network=ha-addons): docker maps it to the bridge gateway through
+// (docker.network=ha-addons): docker maps it through
 // `--add-host=host.docker.internal:host-gateway` (D10, Docker ≥ 20.10).
+// Docker's host-gateway resolves to the default bridge (docker0) gateway IP,
+// or the daemon's configured host-gateway-ip: an address of the host.
 const HostGatewayName = "host.docker.internal"
 
 // modelBWarning is D12's text: what model B breaks, and the way out.

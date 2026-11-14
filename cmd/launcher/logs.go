@@ -60,13 +60,20 @@ func readCursor(path string) *time.Time {
 	return &t
 }
 
-// writeCursor records t (RFC3339Nano, UTC). Best-effort: a failed write only
+// writeCursor records t (RFC3339Nano, UTC). Best-effort: the write is atomic (temp file, then rename); a failed write only
 // costs a capped replay on the next start.
 func writeCursor(path string, t time.Time) {
 	if path == "" {
 		return
 	}
-	_ = os.WriteFile(path, []byte(t.UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(t.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 // followHALogs follows HA's log from logsSince and records the cursor when

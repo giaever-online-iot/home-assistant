@@ -115,9 +115,9 @@ func TestIngressSyncCompareFirst(t *testing.T) {
 	}{
 		{"unchanged", []string{"sync"}, rendered, withInclude, 0, 0, 0, true, ""},
 		{"--force", []string{"sync", "--force"}, rendered, withInclude, 1, 0, 1, false, ""},
-		{"include missing, file unchanged", []string{"sync"}, rendered, "default_config:", 0, 1, 1, false, ""},
+		{"include missing, file unchanged", []string{"sync"}, rendered, "default_config:", 0, 1, 1, false, "Added the ingress include; restarting Home Assistant"},
 		{"foreign ingress key, file unchanged", []string{"sync"}, rendered, "ingress:\n  foo:\n    url: http://x", 0, 0, 0, true, "already defines its own `ingress:` key"},
-		{"panel changed", []string{"sync"}, "old:\n  url: \"http://x\"", withInclude, 1, 0, 1, false, ""},
+		{"panel changed", []string{"sync"}, "old:\n  url: \"http://x\"", withInclude, 1, 0, 1, false, "Wrote 1 ingress panel(s); restarting Home Assistant"},
 		{"header-only change", []string{"sync"}, "# an older header\n" + headerless, withInclude, 1, 0, 0, true, ""},
 	}
 	for _, tc := range cases {
