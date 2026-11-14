@@ -121,6 +121,7 @@ type fakeRunner struct {
 	errs    map[string]error
 	checks  map[string]bool
 	calls   []string
+	stdin   map[string]string // the last stdin piped to each StreamIn key
 }
 
 func (f *fakeRunner) record(args []string) string {
@@ -132,8 +133,31 @@ func (f *fakeRunner) Output(args ...string) (string, error) {
 	k := f.record(args)
 	return f.outputs[k], f.errs[k]
 }
-func (f *fakeRunner) Stream(args ...string) error             { f.record(args); return nil }
-func (f *fakeRunner) StreamIn(_ string, args ...string) error { f.record(args); return nil }
+func (f *fakeRunner) Stream(args ...string) error { f.record(args); return nil }
+
+// StreamIn records the call and its stdin. A `docker exec -i <c> sh -c 'cat >
+// <path>'` write lands the file: later `cat` reads return it trimmed (as
+// docker.Client.ReadFile does), and `test -e` finds it.
+func (f *fakeRunner) StreamIn(stdin string, args ...string) error {
+	k := f.record(args)
+	if f.stdin == nil {
+		f.stdin = map[string]string{}
+	}
+	f.stdin[k] = stdin
+	if len(args) == 6 && args[0] == "exec" && args[1] == "-i" && args[3] == "sh" && args[4] == "-c" && strings.HasPrefix(args[5], "cat > ") {
+		container, path := args[2], strings.TrimPrefix(args[5], "cat > ")
+		if f.outputs == nil {
+			f.outputs = map[string]string{}
+		}
+		if f.checks == nil {
+			f.checks = map[string]bool{}
+		}
+		f.outputs["exec "+container+" cat "+path] = strings.TrimSpace(stdin)
+		delete(f.errs, "exec "+container+" cat "+path)
+		f.checks["exec "+container+" test -e "+path] = true
+	}
+	return nil
+}
 func (f *fakeRunner) Check(args ...string) (bool, error) {
 	k := f.record(args)
 	return f.checks[k], f.errs[k]

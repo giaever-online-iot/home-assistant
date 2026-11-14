@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
@@ -65,23 +66,43 @@ func applyIngress(cli *docker.Client, cfg config.Config, force bool) error {
 	if err := cli.WriteFile(dockerargs.ContainerName, ingressFilePath, body); err != nil {
 		return fmt.Errorf("writing %s: %w", ingressFilePath, err)
 	}
-	current, err := cli.ReadFile(dockerargs.ContainerName, configYAMLPath)
-	if err != nil {
+	if _, err := ensureInclude(cli, os.Stderr); err != nil {
 		return err
+	}
+	fmt.Printf("Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
+	return cli.Restart(dockerargs.ContainerName)
+}
+
+// ensureInclude adds `ingress: !include snap-ingress.yaml` to
+// configuration.yaml and reports whether it wrote the file. It never creates
+// the file and never writes from a failed read (D8a): absent or unreadable
+// gives a warning and no write. HA writes its default configuration.yaml at
+// first boot only when the file is missing, so a snap-made one-liner would
+// suppress those defaults. Only a failed write is an error.
+func ensureInclude(cli *docker.Client, w io.Writer) (changed bool, err error) {
+	current, present, err := cli.ReadFileIfExists(dockerargs.ContainerName, configYAMLPath)
+	if err != nil {
+		fmt.Fprintf(w, "warning: could not read %s (%v); the ingress include was not checked\n", configYAMLPath, err)
+		return false, nil
+	}
+	if !present {
+		fmt.Fprintln(w, "warning: configuration.yaml not found yet; the ingress include is added on the next reconcile")
+		return false, nil
 	}
 	out, changed, conflict := ingress.EnsureInclude(current)
 	switch {
 	case conflict:
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(w,
 			"warning: %s already defines its own `ingress:` key — leaving it untouched.\n"+
 				"  Remove it (or fold in `!include %s`) for snap-managed ingress to apply.\n",
 			configYAMLPath, ingress.IncludeFile)
+		return false, nil
 	case changed:
 		if err := cli.WriteFile(dockerargs.ContainerName, configYAMLPath, out); err != nil {
-			return fmt.Errorf("updating %s: %w", configYAMLPath, err)
+			return false, fmt.Errorf("updating %s: %w", configYAMLPath, err)
 		}
-		fmt.Printf("Added `ingress: !include %s` to configuration.yaml.\n", ingress.IncludeFile)
+		fmt.Fprintf(w, "Added `ingress: !include %s` to configuration.yaml.\n", ingress.IncludeFile)
+		return true, nil
 	}
-	fmt.Printf("Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
-	return cli.Restart(dockerargs.ContainerName)
+	return false, nil
 }

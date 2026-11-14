@@ -238,3 +238,38 @@ func TestImageVolumes(t *testing.T) {
 		t.Error("an inspect failure must be returned")
 	}
 }
+
+// D8a: present, absent and error are three different outcomes.
+func TestReadFileIfExists(t *testing.T) {
+	const (
+		testKey = "exec homeassistant test -e /config/configuration.yaml"
+		catKey  = "exec homeassistant cat /config/configuration.yaml"
+	)
+	cases := []struct {
+		name             string
+		exists, catFails bool
+		checkErr         error
+		content          string
+		present, isErr   bool
+	}{
+		{"present", true, false, nil, "default_config:", true, false},
+		{"absent", false, false, nil, "", false, false},
+		{"cat fails on a file that exists", true, true, nil, "", true, true},
+		{"docker cannot run", false, false, errors.New("exec: docker not found"), "", false, true},
+	}
+	for _, tc := range cases {
+		f := &fakeRunner{
+			outputs: map[string]string{catKey: "default_config:"},
+			checks:  map[string]bool{testKey: tc.exists},
+			errs:    map[string]error{testKey: tc.checkErr},
+		}
+		if tc.catFails {
+			f.outputs[catKey] = ""
+			f.errs[catKey] = errors.New("exit status 1")
+		}
+		content, present, err := NewWithRunner(f).ReadFileIfExists("homeassistant", "/config/configuration.yaml")
+		if content != tc.content || present != tc.present || (err != nil) != tc.isErr {
+			t.Errorf("%s: got (%q, %v, %v), want (%q, %v, error=%v)", tc.name, content, present, err, tc.content, tc.present, tc.isErr)
+		}
+	}
+}

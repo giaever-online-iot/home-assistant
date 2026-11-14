@@ -147,6 +147,27 @@ func (c *Client) ReadFile(name, path string) (string, error) {
 	return out, nil
 }
 
+// ReadFileIfExists tells the three outcomes of reading path inside the
+// container apart (D8a): present (content, true, nil), absent (`test -e`
+// exits non-zero: "", false, nil) and error (docker could not run, or `cat`
+// failed on a file that exists). A stopped container also reads as absent,
+// since `docker exec` then exits non-zero too; callers only ever skip a write
+// on absent, so that is the safe side. Content is trimmed, as ReadFile's is.
+func (c *Client) ReadFileIfExists(name, path string) (content string, present bool, err error) {
+	ok, err := c.r.Check("exec", name, "test", "-e", path)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	out, err := c.r.Output("exec", name, "cat", path)
+	if err != nil {
+		return "", true, err
+	}
+	return out, true, nil
+}
+
 const (
 	pullAttempts = 3
 	pullBackoff  = 3 * time.Second
