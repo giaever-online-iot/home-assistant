@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRunner struct {
@@ -271,5 +272,30 @@ func TestReadFileIfExists(t *testing.T) {
 		if content != tc.content || present != tc.present || (err != nil) != tc.isErr {
 			t.Errorf("%s: got (%q, %v, %v), want (%q, %v, error=%v)", tc.name, content, present, err, tc.content, tc.present, tc.isErr)
 		}
+	}
+}
+
+// T17 (D16): follow from a point in time, never a fixed --tail.
+func TestFollowLogsSince(t *testing.T) {
+	f := &fakeRunner{}
+	since := time.Date(2026, 11, 14, 10, 0, 0, 500_000_000, time.FixedZone("CET", 3600))
+	if err := NewWithRunner(f).FollowLogs("homeassistant", since); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.calls[0], " "); len(f.calls) != 1 || got != "logs -f --since 2026-11-14T09:00:00.5Z homeassistant" {
+		t.Errorf("FollowLogs called %q, want [logs -f --since 2026-11-14T09:00:00.5Z homeassistant]", f.calls)
+	}
+}
+
+func TestStartedAt(t *testing.T) {
+	const key = "inspect -f {{.State.StartedAt}} homeassistant"
+	f := &fakeRunner{outputs: map[string]string{key: "2026-11-13T17:06:12.123456789Z"}}
+	got, err := NewWithRunner(f).StartedAt("homeassistant")
+	if want := time.Date(2026, 11, 13, 17, 6, 12, 123456789, time.UTC); err != nil || !got.Equal(want) {
+		t.Errorf("StartedAt = %v, %v; want %v", got, err, want)
+	}
+	f = &fakeRunner{errs: map[string]error{key: errors.New("No such container")}}
+	if _, err := NewWithRunner(f).StartedAt("homeassistant"); err == nil {
+		t.Error("an inspect failure must be returned")
 	}
 }

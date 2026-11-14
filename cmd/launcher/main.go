@@ -409,6 +409,7 @@ func runRollback(cli *docker.Client, cfg config.Config) error {
 // logged and left for the next reconcile — a broken add-on image can never
 // block HA or stop log-following (systemd would otherwise flap the service).
 func runDaemon(cli *docker.Client, cfg config.Config) error {
+	daemonStart := time.Now()
 	results, err := reconcileSet(cli, cfg, false)
 	if err != nil {
 		return err
@@ -421,12 +422,16 @@ func runDaemon(cli *docker.Client, cfg config.Config) error {
 			fmt.Fprintf(os.Stderr, "warning: reconcile %s: %v — will retry on next reconcile\n", r.Name, r.Err)
 		}
 	}
+	cursor := logsCursorPath()
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigs
+		// First, before anything that can be slow or lose the exit race
+		// (D16; W-10 owns the rest of this handler and keeps this line first).
+		writeCursor(cursor, time.Now())
 		_ = cli.Stop(dockerargs.ContainerName)
 		os.Exit(0)
 	}()
-	return cli.FollowLogs(dockerargs.ContainerName)
+	return followHALogs(cli, cursor, daemonStart, time.Now)
 }

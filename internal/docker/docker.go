@@ -112,9 +112,23 @@ func (c *Client) Pull(image string) error  { return c.pull(image, pullAttempts, 
 func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", "-v", name) }
 func (c *Client) Start(name string) error  { return c.r.Stream("start", name) }
 func (c *Client) Stop(name string) error   { return c.r.Stream("stop", name) }
-func (c *Client) FollowLogs(name string) error {
-	return c.r.Stream("logs", "-f", "--tail", "100", name)
+
+// FollowLogs streams the container's log from since onwards (D16). No
+// --tail: a fixed line count replays up to an hour of old lines into the
+// journal on a quiet HA.
+func (c *Client) FollowLogs(name string, since time.Time) error {
+	return c.r.Stream("logs", "-f", "--since", since.UTC().Format(time.RFC3339Nano), name)
 }
+
+// StartedAt is when the container last started (docker's State.StartedAt).
+func (c *Client) StartedAt(name string) (time.Time, error) {
+	out, err := c.r.Output("inspect", "-f", "{{.State.StartedAt}}", name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, out)
+}
+
 func (c *Client) Exec(name string, cmd ...string) error {
 	return c.r.Stream(append([]string{"exec", name}, cmd...)...)
 }
