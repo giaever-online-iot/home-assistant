@@ -154,3 +154,18 @@ func ensureInclude(cli *docker.Client, w io.Writer) (changed bool, err error) {
 	}
 	return false, nil
 }
+
+// preSwapIngress is HA's BeforeSwap hook (D4). It lands the ingress files in
+// /config through the old, still-running container, so the replacement reads
+// them at its first boot and the post-Set sync finds nothing to restart for.
+// It is quiet apart from one note: line when it cannot write; the post-Set
+// sync then writes and restarts as before (D5).
+func preSwapIngress(cli *docker.Client, cfg config.Config, w io.Writer) {
+	if running, _ := cli.Running(dockerargs.ContainerName); !running {
+		fmt.Fprintln(w, "note: Home Assistant is not running, so the ingress files are written after it is recreated (one extra restart)")
+		return
+	}
+	if _, err := syncIngressFiles(cli, cfg, false, io.Discard); err != nil {
+		fmt.Fprintf(w, "note: could not write the ingress files before recreating Home Assistant (%v); they are written after the swap instead\n", err)
+	}
+}

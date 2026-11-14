@@ -271,7 +271,15 @@ func reconcileSet(cli *docker.Client, cfg config.Config, force bool) ([]reconcil
 			return nil, fmt.Errorf("ensuring the %s network: %w", dockerargs.AddonNetwork, err)
 		}
 	}
-	results := reconcile.Set(cli, buildContainerSpecs(cfg), force)
+	specs := buildContainerSpecs(cfg)
+	// D4: on a recreate, HA's replacement boots with the final ingress files,
+	// so a config change costs one HA start instead of a start and a restart.
+	for i := range specs {
+		if specs[i].Name == dockerargs.ContainerName {
+			specs[i].BeforeSwap = func() { preSwapIngress(cli, cfg, os.Stderr) }
+		}
+	}
+	results := reconcile.Set(cli, specs, force)
 	for _, r := range results {
 		if r.Err != nil {
 			fmt.Fprintf(os.Stderr, "reconcile %s: error: %v\n", r.Name, r.Err)
