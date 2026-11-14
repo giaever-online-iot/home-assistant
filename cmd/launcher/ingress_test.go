@@ -13,6 +13,7 @@ const (
 	keyCatConfigYAML   = "exec homeassistant cat /config/configuration.yaml"
 	keyWriteConfigYAML = "exec -i homeassistant sh -c cat > /config/configuration.yaml"
 	includeYAMLLine    = "ingress: !include snap-ingress.yaml"
+	blankWarn          = "warning: configuration.yaml is empty; the ingress include is added on the next reconcile once it has content\n"
 )
 
 // T13a (D8a): configuration.yaml is never created, and never written from a
@@ -21,15 +22,20 @@ func TestEnsureIncludeHardenedRead(t *testing.T) {
 	cases := []struct {
 		name     string
 		exists   bool
-		content  string // "" with exists = cat fails
+		catFails bool   // cat exits non-zero on a file that exists
+		content  string // what cat prints when it succeeds
 		changed  bool
 		written  string // stdin of the configuration.yaml write; "" = no write
 		wantWarn string
 	}{
 		{name: "absent", exists: false,
 			wantWarn: "warning: configuration.yaml not found yet; the ingress include is added on the next reconcile\n"},
-		{name: "read error", exists: true, content: "",
+		{name: "read error", exists: true, catFails: true,
 			wantWarn: "warning: could not read /config/configuration.yaml (exit status 1); the ingress include was not checked\n"},
+		{name: "present but empty", exists: true, content: "",
+			wantWarn: blankWarn},
+		{name: "present, whitespace only", exists: true, content: "\n  \n",
+			wantWarn: blankWarn},
 		{name: "present without the include", exists: true, content: "default_config:\nhttp:\n  server_port: 8123",
 			changed: true, written: "default_config:\nhttp:\n  server_port: 8123\n" + includeYAMLLine + "\n"},
 		{name: "include present", exists: true, content: "default_config:\n" + includeYAMLLine},
@@ -39,7 +45,7 @@ func TestEnsureIncludeHardenedRead(t *testing.T) {
 	for _, tc := range cases {
 		f := haFake("2026.11.1")
 		f.checks[keyTestConfigYAML] = tc.exists
-		if tc.exists && tc.content == "" {
+		if tc.exists && tc.catFails {
 			f.errs[keyCatConfigYAML] = errors.New("exit status 1")
 		} else if tc.exists {
 			f.outputs[keyCatConfigYAML] = tc.content

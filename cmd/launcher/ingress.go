@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
 	"github.com/giaever-online-iot/home-assistant/internal/docker"
@@ -87,6 +88,12 @@ func ensureInclude(cli *docker.Client, w io.Writer) (changed bool, err error) {
 	}
 	if !present {
 		fmt.Fprintln(w, "warning: configuration.yaml not found yet; the ingress include is added on the next reconcile")
+		return false, nil
+	}
+	if strings.TrimSpace(current) == "" {
+		// A blank read of a present file is also what a read racing HA's
+		// first-boot write, or a truncated file, looks like (T13a).
+		fmt.Fprintln(w, "warning: configuration.yaml is empty; the ingress include is added on the next reconcile once it has content")
 		return false, nil
 	}
 	out, changed, conflict := ingress.EnsureInclude(current)
