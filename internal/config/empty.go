@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 )
 
 // isEmptyObject reports whether v is a JSON object whose every value is
@@ -52,4 +53,27 @@ func withoutEmptyObjects(data []byte) ([]byte, error) {
 	}
 	pruneEmpty(doc)
 	return json.Marshal(doc)
+}
+
+// EmptyPaths lists, sorted, the maximal dotted paths in doc whose value is an
+// empty object (isEmptyObject): when every child of a map is empty, the map's
+// own path is listed and its children are not (D15).
+func EmptyPaths(doc map[string]any) []string {
+	var out []string
+	var walk func(prefix string, m map[string]any)
+	walk = func(prefix string, m map[string]any) {
+		for k, v := range m {
+			p := prefix + k
+			if isEmptyObject(v) {
+				out = append(out, p)
+				continue
+			}
+			if child, ok := v.(map[string]any); ok {
+				walk(p+".", child)
+			}
+		}
+	}
+	walk("", doc)
+	sort.Strings(out)
+	return out
 }

@@ -30,6 +30,16 @@ import (
 func dockerBin() string { return filepath.Join(os.Getenv("SNAP"), "docker-snap", "bin", "docker") }
 
 func loadConfig() (config.Config, error) {
+	data, err := snapConfigJSON()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Parse(data)
+}
+
+// snapConfigJSON is the snap's config as one JSON document, merged from the
+// launcher's namespaces.
+func snapConfigJSON() ([]byte, error) {
 	// snapctl needs explicit key(s): a bare `snapctl get -d` exits non-zero on a
 	// fresh install with no config set (seen on Ubuntu Core), which aborts the
 	// configure hook and rolls back the whole install. Query each config namespace
@@ -42,7 +52,7 @@ func loadConfig() (config.Config, error) {
 		}
 		var doc map[string]json.RawMessage
 		if err := json.Unmarshal(out, &doc); err != nil {
-			return config.Config{}, fmt.Errorf("parsing snap config %q: %w", ns, err)
+			return nil, fmt.Errorf("parsing snap config %q: %w", ns, err)
 		}
 		for k, v := range doc {
 			merged[k] = v
@@ -50,9 +60,32 @@ func loadConfig() (config.Config, error) {
 	}
 	data, err := json.Marshal(merged)
 	if err != nil {
-		return config.Config{}, fmt.Errorf("encoding snap config: %w", err)
+		return nil, fmt.Errorf("encoding snap config: %w", err)
 	}
-	return config.Parse(data)
+	return data, nil
+}
+
+// runPruneConfig unsets the empty maps snapd leaves behind when the last
+// child key is unset, so `snap get -d` stays tidy (D15). Docker-free; the
+// configure hook runs it after validate and ignores its exit status.
+func runPruneConfig() error {
+	data, err := snapConfigJSON()
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parsing snap config: %w", err)
+	}
+	paths := config.EmptyPaths(doc)
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := exec.Command("snapctl", append([]string{"unset"}, paths...)...).Run(); err != nil {
+		return fmt.Errorf("snapctl unset %s: %w", strings.Join(paths, " "), err)
+	}
+	fmt.Fprintln(os.Stderr, "pruned empty snap config:", strings.Join(paths, " "))
+	return nil
 }
 
 func snapctlSet(key, value string) error {
@@ -174,7 +207,7 @@ func preflightContainer(cli *docker.Client, cfg config.Config) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|install|ingress|validate>")
+		fmt.Fprintln(os.Stderr, "usage: launcher <daemon|reconcile|update|backup|rollback|check-config|cli|install|ingress|validate|prune-config>")
 		os.Exit(2)
 	}
 	if err := run(os.Args[1]); err != nil {
@@ -184,6 +217,10 @@ func main() {
 }
 
 func run(cmd string) error {
+	// "prune-config" works on the raw config document, not the parsed one.
+	if cmd == "prune-config" {
+		return runPruneConfig()
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

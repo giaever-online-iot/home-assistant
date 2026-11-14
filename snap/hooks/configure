@@ -6,6 +6,11 @@ set -e
 # atomically, leaving the container untouched.
 "$SNAP/bin/launcher" validate
 
+# Unset the empty maps snapd leaves behind when the last child key is unset
+# (e.g. "addons": {}), so `snap get -d` stays tidy.  Cosmetic only: the parser
+# already treats an empty map as absent, so pruning can never reject the set.
+"$SNAP/bin/launcher" prune-config || true
+
 # Re-apply configuration by restarting the launcher daemon, which reconciles
 # the Home Assistant container to the (possibly changed) snap config. Reconcile
 # is idempotent: a spec-hash label means an unchanged config is a no-op.
