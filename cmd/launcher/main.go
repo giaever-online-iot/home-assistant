@@ -230,7 +230,7 @@ func run(cmd string) error {
 		// usage error fails instantly instead of paying for slow docker calls.
 		return runInstall(cli, cfg, os.Args[2:], os.Stdout)
 	case "ingress":
-		return runIngress(cli, cfg, os.Args[2:])
+		return runIngress(cli, cfg, os.Args[2:], os.Stdout, os.Stderr)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -282,7 +282,7 @@ func reconcileSet(cli *docker.Client, cfg config.Config, force bool) ([]reconcil
 	warnUncoveredVolumes(cli, cfg, results, os.Stderr)
 	// Panels are cosmetic, containers are the substance: ingress problems
 	// must never fail (or flap) the reconcile.
-	if err := applyIngress(cli, cfg, false); err != nil {
+	if _, err := applyIngress(cli, cfg, false, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: ingress sync:", err)
 	}
 	return results, nil

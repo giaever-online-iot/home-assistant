@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
@@ -20,58 +19,100 @@ const (
 // runIngress renders the merged panel map (explicit ingress.* + add-on
 // panels) from snap config.
 //   - `show`: print the rendered file (dry run, no side effects).
-//   - `sync` (default): force-apply — land it in /config, ensure the include,
-//     restart HA.
-func runIngress(cli *docker.Client, cfg config.Config, args []string) error {
+//   - `sync` (default): compare-first, like reconcile's auto-sync (D7): land
+//     the file and the include line, and restart HA only when the panels
+//     changed. `sync --force` always writes and restarts (the repair hatch).
+func runIngress(cli *docker.Client, cfg config.Config, args []string, stdout, stderr io.Writer) error {
 	sub := "sync"
 	if len(args) > 0 {
 		sub = args[0]
 	}
 	switch sub {
 	case "show":
-		fmt.Print(ingress.Render(ingress.MergedEntries(cfg)))
+		fmt.Fprint(stdout, ingress.Render(ingress.MergedEntries(cfg)))
 		return nil
 	case "sync":
-		return applyIngress(cli, cfg, true)
+		force := false
+		var opts []string
+		if len(args) > 1 {
+			opts = args[1:]
+		}
+		for _, a := range opts {
+			if a != "--force" {
+				return fmt.Errorf("unknown ingress sync option %q (use: --force)", a)
+			}
+			force = true
+		}
+		restarted, err := applyIngress(cli, cfg, force, stderr)
+		if err == nil && !restarted {
+			fmt.Fprintln(stdout, "ingress: panels unchanged; Home Assistant not restarted (use --force to restart anyway)")
+		}
+		return err
 	default:
 		return fmt.Errorf("unknown ingress subcommand %q (use: sync, show)", sub)
 	}
 }
 
-// applyIngress lands the merged panel map in /config. force=true (manual
-// `ingress sync`) always writes and restarts; force=false (auto-sync from
-// reconcile) is change-driven — identical content means no write and no HA
-// restart, so a boot-time reconcile is a true no-op. Callers treat auto-sync
-// errors as warnings: panels are cosmetic, containers are the substance.
-func applyIngress(cli *docker.Client, cfg config.Config, force bool) error {
+// applyIngress lands the merged panel map in /config and restarts HA when
+// that is needed for it to take effect; restarted says whether it did. It
+// checks the hass_ingress install and mode first (W-12 D11, D12). force
+// (`ingress sync --force`) writes and restarts unconditionally; otherwise it
+// is change-driven (D6–D8), so a boot-time reconcile is a true no-op. Its
+// messages go to w. Callers treat auto-sync errors as warnings: panels are
+// cosmetic, containers are the substance.
+func applyIngress(cli *docker.Client, cfg config.Config, force bool, w io.Writer) (restarted bool, err error) {
 	entries := ingress.MergedEntries(cfg)
-	body := ingress.Render(entries)
 	if err := preflightContainer(cli, cfg); err != nil {
-		return err
+		return false, err
 	}
 	if len(entries) > 0 {
 		installed, err := cli.ExecCheck(dockerargs.ContainerName, "test", "-d", "/config/custom_components/ingress")
 		if err == nil && !installed {
-			fmt.Fprintln(os.Stderr, "warning: ingress panels are configured but hass_ingress is not installed — run `home-assistant.install hass-ingress`")
+			fmt.Fprintln(w, "warning: ingress panels are configured but hass_ingress is not installed — run `home-assistant.install hass-ingress`")
 		}
 		if err == nil && installed {
-			warnIngressMode(cli, os.Stderr)
+			warnIngressMode(cli, w)
 		}
 	}
+	restart, err := syncIngressFiles(cli, cfg, force, w)
+	if err != nil {
+		return false, err
+	}
+	if !restart {
+		return false, nil
+	}
+	fmt.Fprintf(w, "Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
+	return true, cli.Restart(dockerargs.ContainerName)
+}
+
+// syncIngressFiles brings snap-ingress.yaml and configuration.yaml's include
+// line up to date and reports whether HA must restart to pick them up. It
+// never restarts HA itself, so it can also run in the old container just
+// before a recreate (D4). force writes the file and asks for a restart even
+// when nothing changed. The include line is checked whenever there is at
+// least one panel, even when the file is unchanged (D8). Warnings go to w.
+func syncIngressFiles(cli *docker.Client, cfg config.Config, force bool, w io.Writer) (restart bool, err error) {
+	entries := ingress.MergedEntries(cfg)
+	body := ingress.Render(entries)
+	write := true
+	restart = true
 	if !force {
 		current, _ := cli.ReadFile(dockerargs.ContainerName, ingressFilePath)
-		if write, _ := ingress.Decide(current, body, len(entries)); !write {
-			return nil
+		write, restart = ingress.Decide(current, body, len(entries))
+	}
+	if write {
+		if err := cli.WriteFile(dockerargs.ContainerName, ingressFilePath, body); err != nil {
+			return false, fmt.Errorf("writing %s: %w", ingressFilePath, err)
 		}
 	}
-	if err := cli.WriteFile(dockerargs.ContainerName, ingressFilePath, body); err != nil {
-		return fmt.Errorf("writing %s: %w", ingressFilePath, err)
+	if len(entries) > 0 {
+		added, err := ensureInclude(cli, w)
+		if err != nil {
+			return false, err
+		}
+		restart = restart || added
 	}
-	if _, err := ensureInclude(cli, os.Stderr); err != nil {
-		return err
-	}
-	fmt.Printf("Wrote %d ingress panel(s); restarting Home Assistant…\n", len(entries))
-	return cli.Restart(dockerargs.ContainerName)
+	return restart, nil
 }
 
 // ensureInclude adds `ingress: !include snap-ingress.yaml` to
