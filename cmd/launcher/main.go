@@ -279,6 +279,7 @@ func reconcileSet(cli *docker.Client, cfg config.Config, force bool) ([]reconcil
 		}
 		fmt.Printf("reconcile %s: %s\n", r.Name, r.Action)
 	}
+	warnUncoveredVolumes(cli, cfg, results, os.Stderr)
 	// Panels are cosmetic, containers are the substance: ingress problems
 	// must never fail (or flap) the reconcile.
 	if err := applyIngress(cli, cfg, false); err != nil {

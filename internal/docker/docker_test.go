@@ -217,3 +217,24 @@ func TestRemoveDeletesAnonymousVolumes(t *testing.T) {
 		t.Errorf("Remove called %q, want exactly [rm -f -v ha-addon-mqtt]", f.calls)
 	}
 }
+
+func TestImageVolumes(t *testing.T) {
+	const key = "image inspect -f {{json .Config.Volumes}} "
+	f := &fakeRunner{
+		outputs: map[string]string{
+			key + "eclipse-mosquitto:2": `{"/mosquitto/log":{},"/mosquitto/data":{}}`,
+			key + "plain:1":             "null",
+		},
+		errs: map[string]error{key + "gone:1": errors.New("No such image")},
+	}
+	c := NewWithRunner(f)
+	if got, err := c.ImageVolumes("eclipse-mosquitto:2"); err != nil || strings.Join(got, ",") != "/mosquitto/data,/mosquitto/log" {
+		t.Errorf("mosquitto: %q, %v; want sorted [/mosquitto/data /mosquitto/log]", got, err)
+	}
+	if got, err := c.ImageVolumes("plain:1"); err != nil || len(got) != 0 {
+		t.Errorf("no VOLUMEs (null): %q, %v; want none", got, err)
+	}
+	if _, err := c.ImageVolumes("gone:1"); err == nil {
+		t.Error("an inspect failure must be returned")
+	}
+}

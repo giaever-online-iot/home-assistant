@@ -1,10 +1,12 @@
 package docker
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -175,6 +177,26 @@ func (c *Client) ImageExists(image string) (bool, error) {
 		return false, nil // `image inspect` fails when the image is absent
 	}
 	return true, nil
+}
+
+// ImageVolumes returns the VOLUME paths the image declares, sorted ("null",
+// i.e. no VOLUMEs, gives none). Used to warn about anonymous volumes whose
+// content `rm -v` discards (D3).
+func (c *Client) ImageVolumes(image string) ([]string, error) {
+	out, err := c.r.Output("image", "inspect", "-f", "{{json .Config.Volumes}}", image)
+	if err != nil {
+		return nil, err
+	}
+	var vols map[string]struct{}
+	if err := json.Unmarshal([]byte(out), &vols); err != nil {
+		return nil, fmt.Errorf("parsing the VOLUMEs of %s: %w", image, err)
+	}
+	paths := make([]string, 0, len(vols))
+	for p := range vols {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // EnsureNetwork creates the named user-defined bridge if it does not exist.
