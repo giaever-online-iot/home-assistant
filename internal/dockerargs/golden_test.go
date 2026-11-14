@@ -2,6 +2,7 @@ package dockerargs
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,23 @@ func TestGoldenModelA(t *testing.T) {
 		}
 		if got := BuildRunArgs(cfg(tc.json)); !reflect.DeepEqual(got, tc.args) {
 			t.Errorf("%s: BuildRunArgs =\n %q\nwant the golden\n %q", tc.name, got, tc.args)
+		}
+	}
+}
+
+// T11 (D10): under model B, HA gets a stable name for the host; nothing else
+// gets --add-host.
+func TestModelBAddsHostGateway(t *testing.T) {
+	b := cfg(`{"docker":{"network":"ha-addons"}}`)
+	if got := join(BuildRunArgs(b)); !strings.Contains(got, "--add-host=host.docker.internal:host-gateway") {
+		t.Errorf("model B args lack --add-host=host.docker.internal:host-gateway\n got: %s", got)
+	}
+	if SpecHash(b) == preD10HashModelB {
+		t.Error("model B's hash must change with --add-host, or an existing model B HA is never recreated to get it")
+	}
+	for _, j := range []string{`{}`, richModelA, `{"docker":{"network":"bridge"}}`} {
+		if got := join(BuildRunArgs(cfg(j))); strings.Contains(got, "--add-host") {
+			t.Errorf("%s: unexpected --add-host\n got: %s", j, got)
 		}
 	}
 }
