@@ -33,6 +33,10 @@ type ContainerSpec struct {
 	Image    string
 	WantHash string
 	RunArgs  []string
+	// BeforeSwap, when set, runs once on recreate only: after the pull has
+	// succeeded and before the old container is removed, while it is still
+	// running. It returns nothing; the ladder ignores what it does (D4).
+	BeforeSwap func()
 }
 
 // Reconcile ensures the container matches s. When force is true the
@@ -64,6 +68,9 @@ func Reconcile(d Docker, s ContainerSpec, force bool) (Action, error) {
 		// so the swap is quick and the old container stays up while it downloads.
 		if err := d.Pull(s.Image); err != nil {
 			return ActionNone, err
+		}
+		if s.BeforeSwap != nil {
+			s.BeforeSwap()
 		}
 		if err := d.Remove(s.Name); err != nil {
 			return ActionNone, err
