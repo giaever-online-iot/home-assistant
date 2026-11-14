@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -17,7 +18,11 @@ type Recipe struct {
 	Name       string
 	Dest       string
 	Activation string // printed after a successful install (manual UI steps)
+	Installed  string // printed when Dest already exists (no --force)
 	Install    func(*docker.Client) error
+	// Gate, if set, runs after preflight and before the dir probe. proceed=false
+	// prints notice and exits 0 with nothing installed, whatever --force says.
+	Gate func(c *docker.Client) (proceed bool, notice string, err error)
 }
 
 // installRegistry maps an install target to its recipe. Extend this to add more
@@ -26,6 +31,7 @@ var installRegistry = map[string]Recipe{
 	"hacs": {
 		Name: "hacs",
 		Dest: "/config/custom_components/hacs",
+		Gate: hacsGate,
 		Install: func(c *docker.Client) error {
 			// HACS's documented container install: fetch + extract into
 			// /config/custom_components/hacs from inside the running container.
@@ -34,7 +40,8 @@ var installRegistry = map[string]Recipe{
 		Activation: "\nHACS files installed. To finish (one-time, in the UI):\n" +
 			"  1. Home Assistant → Settings → Devices & services → Add integration → HACS.\n" +
 			"  2. Acknowledge the prompts, then complete the GitHub device authorization.\n" +
-			"HACS updates itself from the UI thereafter.\n",
+			"HACS gets no further releases; upgrading Home Assistant to 2026.11 or later moves it to the built-in Marketplace.\n",
+		Installed: "hacs is already installed. It updates from its own page in the Home Assistant UI, but gets no new releases. Use --force to reinstall.",
 	},
 	"hass-ingress": {
 		Name: "hass-ingress",
@@ -60,6 +67,7 @@ var installRegistry = map[string]Recipe{
 			"  1. Define panels:  snap set home-assistant ingress.<name>.url=http://localhost:<port> ingress.<name>.title=\"<Title>\"\n" +
 			"  2. Apply:          home-assistant.ingress sync\n" +
 			"Each panel then appears in the Home Assistant sidebar.\n",
+		Installed: `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
 	},
 }
 
@@ -107,7 +115,7 @@ func parseInstallArgs(args []string) (target string, noRestart, force bool, err 
 // --no-restart) restarts the container so HA loads it. Argument/target
 // validation happens BEFORE the docker preflight so a usage error fails fast —
 // the preflight's docker calls can be slow.
-func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
+func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Writer) error {
 	target, noRestart, force, err := parseInstallArgs(args)
 	if err != nil {
 		return err
@@ -120,13 +128,25 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
 	if err := preflightContainer(cli, cfg); err != nil {
 		return err
 	}
+	if recipe.Gate != nil {
+		proceed, notice, err := recipe.Gate(cli)
+		if err != nil {
+			return err
+		}
+		if notice != "" {
+			fmt.Fprintln(out, notice)
+		}
+		if !proceed {
+			return nil
+		}
+	}
 	if !force {
 		installed, err := cli.ExecCheck(dockerargs.ContainerName, "test", "-d", recipe.Dest)
 		if err != nil {
 			return err
 		}
 		if installed {
-			fmt.Printf("%s is already installed (it self-updates from the Home Assistant UI). Use --force to reinstall.\n", recipe.Name)
+			fmt.Fprintln(out, recipe.Installed)
 			return nil
 		}
 	}
@@ -134,11 +154,11 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string) error {
 		return fmt.Errorf("installing %s: %w", recipe.Name, err)
 	}
 	if !noRestart {
-		fmt.Printf("Restarting Home Assistant to load %s …\n", recipe.Name)
+		fmt.Fprintf(out, "Restarting Home Assistant to load %s …\n", recipe.Name)
 		if err := cli.Restart(dockerargs.ContainerName); err != nil {
 			return fmt.Errorf("restarting after install: %w", err)
 		}
 	}
-	fmt.Print(recipe.Activation)
+	fmt.Fprint(out, recipe.Activation)
 	return nil
 }

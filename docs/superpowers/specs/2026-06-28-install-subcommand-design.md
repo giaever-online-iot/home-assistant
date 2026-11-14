@@ -1,5 +1,9 @@
 # `home-assistant install <target>` — Design Spec
 
+> **Superseded in part (2026-11-12, W-5):** HACS moved into Home Assistant core
+> as the Marketplace in 2026.11. `install hacs` is now a version-gated no-op on
+> 2026.11 and later. See `2026-11-12-hacs-marketplace-design.md`.
+
 **Date:** 2026-06-28
 **Status:** Proposed (for review). Follow-on to the v1 Container snap (PR #1); a separate change, not a blocker for merge.
 
