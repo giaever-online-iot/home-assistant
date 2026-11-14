@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRunner struct {
@@ -203,5 +204,98 @@ func TestListByLabel(t *testing.T) {
 	c = NewWithRunner(&fakeRunner{})
 	if got, err := c.ListByLabel("io.giaever.home-assistant.addon"); err != nil || got != nil {
 		t.Errorf("empty: %v, %v", got, err)
+	}
+}
+
+// T1: rm -v drops the container's anonymous volumes (D2); named volumes and
+// bind mounts are never touched by -v.
+func TestRemoveDeletesAnonymousVolumes(t *testing.T) {
+	f := &fakeRunner{}
+	if err := NewWithRunner(f).Remove("ha-addon-mqtt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || strings.Join(f.calls[0], " ") != "rm -f -v ha-addon-mqtt" {
+		t.Errorf("Remove called %q, want exactly [rm -f -v ha-addon-mqtt]", f.calls)
+	}
+}
+
+func TestImageVolumes(t *testing.T) {
+	const key = "image inspect -f {{json .Config.Volumes}} "
+	f := &fakeRunner{
+		outputs: map[string]string{
+			key + "eclipse-mosquitto:2": `{"/mosquitto/log":{},"/mosquitto/data":{}}`,
+			key + "plain:1":             "null",
+		},
+		errs: map[string]error{key + "gone:1": errors.New("No such image")},
+	}
+	c := NewWithRunner(f)
+	if got, err := c.ImageVolumes("eclipse-mosquitto:2"); err != nil || strings.Join(got, ",") != "/mosquitto/data,/mosquitto/log" {
+		t.Errorf("mosquitto: %q, %v; want sorted [/mosquitto/data /mosquitto/log]", got, err)
+	}
+	if got, err := c.ImageVolumes("plain:1"); err != nil || len(got) != 0 {
+		t.Errorf("no VOLUMEs (null): %q, %v; want none", got, err)
+	}
+	if _, err := c.ImageVolumes("gone:1"); err == nil {
+		t.Error("an inspect failure must be returned")
+	}
+}
+
+// D8a: present, absent and error are three different outcomes.
+func TestReadFileIfExists(t *testing.T) {
+	const (
+		testKey = "exec homeassistant test -e /config/configuration.yaml"
+		catKey  = "exec homeassistant cat /config/configuration.yaml"
+	)
+	cases := []struct {
+		name             string
+		exists, catFails bool
+		checkErr         error
+		content          string
+		present, isErr   bool
+	}{
+		{"present", true, false, nil, "default_config:", true, false},
+		{"absent", false, false, nil, "", false, false},
+		{"cat fails on a file that exists", true, true, nil, "", true, true},
+		{"docker cannot run", false, false, errors.New("exec: docker not found"), "", false, true},
+	}
+	for _, tc := range cases {
+		f := &fakeRunner{
+			outputs: map[string]string{catKey: "default_config:"},
+			checks:  map[string]bool{testKey: tc.exists},
+			errs:    map[string]error{testKey: tc.checkErr},
+		}
+		if tc.catFails {
+			f.outputs[catKey] = ""
+			f.errs[catKey] = errors.New("exit status 1")
+		}
+		content, present, err := NewWithRunner(f).ReadFileIfExists("homeassistant", "/config/configuration.yaml")
+		if content != tc.content || present != tc.present || (err != nil) != tc.isErr {
+			t.Errorf("%s: got (%q, %v, %v), want (%q, %v, error=%v)", tc.name, content, present, err, tc.content, tc.present, tc.isErr)
+		}
+	}
+}
+
+// T17 (D16): follow from a point in time, never a fixed --tail.
+func TestFollowLogsSince(t *testing.T) {
+	f := &fakeRunner{}
+	since := time.Date(2026, 11, 14, 10, 0, 0, 500_000_000, time.FixedZone("CET", 3600))
+	if err := NewWithRunner(f).FollowLogs("homeassistant", since); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.calls[0], " "); len(f.calls) != 1 || got != "logs -f --since 2026-11-14T09:00:00.5Z homeassistant" {
+		t.Errorf("FollowLogs called %q, want [logs -f --since 2026-11-14T09:00:00.5Z homeassistant]", f.calls)
+	}
+}
+
+func TestStartedAt(t *testing.T) {
+	const key = "inspect -f {{.State.StartedAt}} homeassistant"
+	f := &fakeRunner{outputs: map[string]string{key: "2026-11-13T17:06:12.123456789Z"}}
+	got, err := NewWithRunner(f).StartedAt("homeassistant")
+	if want := time.Date(2026, 11, 13, 17, 6, 12, 123456789, time.UTC); err != nil || !got.Equal(want) {
+		t.Errorf("StartedAt = %v, %v; want %v", got, err, want)
+	}
+	f = &fakeRunner{errs: map[string]error{key: errors.New("No such container")}}
+	if _, err := NewWithRunner(f).StartedAt("homeassistant"); err == nil {
+		t.Error("an inspect failure must be returned")
 	}
 }

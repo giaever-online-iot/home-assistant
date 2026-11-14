@@ -51,3 +51,23 @@ func TestDaemonAppRestartsWithDelay(t *testing.T) {
 		t.Errorf("daemon restart-delay = %q, want %q", got, "10s")
 	}
 }
+
+// T15 (D15): the configure hook prunes empty maps only after validate has
+// accepted the config, before the daemon restart, and never lets pruning
+// reject a `snap set`.
+func TestConfigureHookPrunesAfterValidate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "snap", "hooks", "configure"))
+	if err != nil {
+		t.Fatalf("read the configure hook: %v", err)
+	}
+	hook := string(raw)
+	validate := strings.Index(hook, "\n\"$SNAP/bin/launcher\" validate\n")
+	prune := strings.Index(hook, "\n\"$SNAP/bin/launcher\" prune-config || true\n")
+	restart := strings.Index(hook, "snapctl restart")
+	if validate < 0 || prune < 0 || restart < 0 {
+		t.Fatalf("hook lacks a validate line, a guarded prune-config line or the restart (%d, %d, %d):\n%s", validate, prune, restart, hook)
+	}
+	if !(validate < prune && prune < restart) {
+		t.Errorf("order is validate %d, prune-config %d, restart %d; want validate < prune-config < restart", validate, prune, restart)
+	}
+}

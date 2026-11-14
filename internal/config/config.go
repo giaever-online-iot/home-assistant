@@ -70,7 +70,11 @@ const (
 func Parse(data []byte) (Config, error) {
 	var raw rawConfig
 	if len(data) > 0 {
-		if err := json.Unmarshal(data, &raw); err != nil {
+		pruned, err := withoutEmptyObjects(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("parsing snap config: %w", err)
+		}
+		if err := json.Unmarshal(pruned, &raw); err != nil {
 			return Config{}, fmt.Errorf("parsing snap config: %w", err)
 		}
 	}
@@ -128,7 +132,10 @@ func boolOrDefault(v *bool, def bool) bool {
 
 // Validate returns non-fatal warnings and a fatal error if the config is unusable.
 func (c Config) Validate() (warnings []string, err error) {
-	if c.Network != "host" {
+	switch {
+	case c.Network == addonsNetworkName:
+		warnings = append(warnings, c.modelBWarnings()...)
+	case c.Network != "host":
 		warnings = append(warnings, fmt.Sprintf(
 			"docker.network=%q: device discovery and Bluetooth need host networking; prefer docker.network=host", c.Network))
 	}

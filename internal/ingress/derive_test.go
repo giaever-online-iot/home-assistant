@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
@@ -38,7 +39,7 @@ func TestDeriveEntriesModelA(t *testing.T) {
 
 func TestDeriveEntriesModelAExplicitBindIP(t *testing.T) {
 	c := parse(t, `{"addons":{
-		"nodered":{"image":"i","ports":{"ui":"192.168.1.5:8080:80"},"ingress":{}}
+		"nodered":{"image":"i","ports":{"ui":"192.168.1.5:8080:80"},"ingress":{"title":"Node-RED"}}
 	}}`)
 	e := DeriveEntries(c.Addons, c.Network)["nodered"]
 	if e.URL != "http://192.168.1.5:8080" { // bound to a specific ip: only that ip is reachable
@@ -46,7 +47,7 @@ func TestDeriveEntriesModelAExplicitBindIP(t *testing.T) {
 	}
 
 	c = parse(t, `{"addons":{
-		"mqtt":{"image":"i","ports":{"ui":"0.0.0.0:1883:1883"},"ingress":{}}
+		"mqtt":{"image":"i","ports":{"ui":"0.0.0.0:1883:1883"},"ingress":{"title":"MQTT"}}
 	}}`)
 	e = DeriveEntries(c.Addons, c.Network)["mqtt"]
 	if e.URL != "http://127.0.0.1:1883" { // 0.0.0.0 is reachable via loopback too
@@ -70,7 +71,7 @@ func TestDeriveEntriesModelB(t *testing.T) {
 func TestMergedEntries(t *testing.T) {
 	c := parse(t, `{
 		"ingress":{"zwave":{"url":"http://localhost:8091","title":"Z-Wave"}},
-		"addons":{"nodered":{"image":"i","ports":{"ui":1880},"ingress":{}}}
+		"addons":{"nodered":{"image":"i","ports":{"ui":1880},"ingress":{"title":"Node-RED"}}}
 	}`)
 	got := MergedEntries(c)
 	if len(got) != 2 || got["zwave"].URL != "http://localhost:8091" || got["nodered"].URL == "" {
@@ -78,21 +79,60 @@ func TestMergedEntries(t *testing.T) {
 	}
 }
 
-func TestShouldSync(t *testing.T) {
+// T8 (D6, replaces TestShouldSync per D19): write and restart only when the
+// YAML changes meaning; a comment-only change is written without a restart.
+func TestDecide(t *testing.T) {
+	const (
+		oldHdr = "# Managed by the home-assistant snap (old wording).\n"
+		newHdr = "# Managed by the home-assistant snap — new wording.\n# Second header line.\n"
+		body   = "nodered:\n  url: \"http://127.0.0.1:1880\"\n"
+	)
 	cases := []struct {
+		name              string
 		current, rendered string
 		panels            int
-		want              bool
+		write, restart    bool
 	}{
-		{"", "{}", 0, false},                 // nothing wanted, nothing there: fresh install stays untouched
-		{"", "nodered:\n", 1, true},          // first panel
-		{"nodered:", "nodered:\n", 1, false}, // ReadFile trims; trimmed-equal = no restart
-		{"old:", "new:\n", 1, true},          // changed
-		{"old:", "{}\n", 0, true},            // last panel removed → write the empty map
+		{"fresh install: no panels, no file", "", newHdr + "{}\n", 0, false, false},
+		{"first panel", "", newHdr + body, 1, true, true},
+		{"trimmed-equal (ReadFile trims)", strings.TrimSpace(newHdr + body), newHdr + body, 1, false, false},
+		{"whitespace at the ends only", "\n\n" + newHdr + body + "\n  \n", newHdr + body, 1, false, false},
+		{"header-only change", oldHdr + body, newHdr + body, 1, true, false},
+		{"header added to a headerless file", body, newHdr + body, 1, true, false},
+		{"panel changed", newHdr + "old:\n  url: \"http://x\"\n", newHdr + body, 1, true, true},
+		{"last panel removed", newHdr + body, newHdr + "{}\n", 0, true, true},
+		{"header change on the empty map", oldHdr + "{}", newHdr + "{}\n", 0, true, false},
 	}
-	for i, c := range cases {
-		if got := ShouldSync(c.current, c.rendered, c.panels); got != c.want {
-			t.Errorf("case %d: ShouldSync = %v, want %v", i, got, c.want)
+	for _, tc := range cases {
+		write, restart := Decide(tc.current, tc.rendered, tc.panels)
+		if write != tc.write || restart != tc.restart {
+			t.Errorf("%s: Decide = (write %v, restart %v), want (%v, %v)", tc.name, write, restart, tc.write, tc.restart)
 		}
+	}
+}
+
+// T12 (D11): under model B, explicit loopback panels render with the host's
+// name; model A and derived add-on panels are untouched.
+func TestMergedEntriesModelBLoopback(t *testing.T) {
+	const body = `"ingress":{
+		"zwave":{"url":"http://localhost:8091"},
+		"lan":{"url":"http://localhost.example:80"}
+	},"addons":{"nodered":{"image":"i","ports":{"ui":"8080:1880"},"ingress":{"title":"Node-RED"}}}`
+	b := MergedEntries(parse(t, `{"docker":{"network":"ha-addons"},`+body+`}`))
+	if got := b["zwave"].URL; got != "http://host.docker.internal:8091" {
+		t.Errorf("model B zwave URL = %q, want http://host.docker.internal:8091", got)
+	}
+	if got := b["lan"].URL; got != "http://localhost.example:80" {
+		t.Errorf("model B lan URL = %q, want it unchanged", got)
+	}
+	if got := b["nodered"].URL; got != "http://ha-addon-nodered:1880" {
+		t.Errorf("model B derived URL = %q, want the container-name form", got)
+	}
+	a := MergedEntries(parse(t, `{`+body+`}`))
+	if got := a["zwave"].URL; got != "http://localhost:8091" {
+		t.Errorf("model A zwave URL = %q, want it unchanged", got)
+	}
+	if got := a["nodered"].URL; got != "http://127.0.0.1:8080" {
+		t.Errorf("model A derived URL = %q", got)
 	}
 }

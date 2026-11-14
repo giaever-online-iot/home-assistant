@@ -16,6 +16,10 @@ const (
 	SpecHashLabel    = "io.giaever.home-assistant.spec-hash"
 )
 
+// hostGatewayFlag gives HA a stable name for the host under model B, where
+// its "localhost" is its own container (D10).
+const hostGatewayFlag = "--add-host=" + config.HostGatewayName + ":host-gateway"
+
 // ConfigSource returns the docker volume source for /config: a named volume by
 // default, or the configured absolute bind path.
 func ConfigSource(c config.Config) string {
@@ -46,7 +50,7 @@ func BuildRunArgs(c config.Config) []string {
 	// On the add-ons bridge HA loses the host netns; without this HA's own
 	// UI would be unreachable from the LAN.
 	if c.Network == AddonNetwork {
-		args = append(args, "-p", "8123:8123")
+		args = append(args, "-p", "8123:8123", hostGatewayFlag)
 	}
 	if c.Privileged {
 		args = append(args, "--privileged")
@@ -79,6 +83,11 @@ func SpecHash(c config.Config) string {
 	fmt.Fprintf(h, "ref=%s\n", ImageRef(c))
 	fmt.Fprintf(h, "net=%s\npriv=%t\nbt=%t\ntz=%s\nsrc=%s\nextra=%s\n",
 		c.Network, c.Privileged, c.Bluetooth, c.Timezone, ConfigSource(c), strings.TrimSpace(c.ExtraArgs))
+	// Model B only, so a model A hash stays byte-identical to the one before
+	// D10 and model A users are not recreated on upgrade (golden_test.go).
+	if c.Network == AddonNetwork {
+		fmt.Fprintf(h, "addhost=%s\n", hostGatewayFlag)
+	}
 	for _, k := range sortedKeys(c.Devices) {
 		fmt.Fprintf(h, "dev:%s=%s\n", k, c.Devices[k])
 	}

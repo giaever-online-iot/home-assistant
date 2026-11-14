@@ -1,10 +1,12 @@
 package docker
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -107,12 +109,26 @@ func (c *Client) ImageDigest(name string) (string, error) {
 }
 
 func (c *Client) Pull(image string) error  { return c.pull(image, pullAttempts, pullBackoff) }
-func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", name) }
+func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", "-v", name) }
 func (c *Client) Start(name string) error  { return c.r.Stream("start", name) }
 func (c *Client) Stop(name string) error   { return c.r.Stream("stop", name) }
-func (c *Client) FollowLogs(name string) error {
-	return c.r.Stream("logs", "-f", "--tail", "100", name)
+
+// FollowLogs streams the container's log from since onwards (D16). No
+// --tail: a fixed line count replays up to an hour of old lines into the
+// journal on a quiet HA.
+func (c *Client) FollowLogs(name string, since time.Time) error {
+	return c.r.Stream("logs", "-f", "--since", since.UTC().Format(time.RFC3339Nano), name)
 }
+
+// StartedAt is when the container last started (docker's State.StartedAt).
+func (c *Client) StartedAt(name string) (time.Time, error) {
+	out, err := c.r.Output("inspect", "-f", "{{.State.StartedAt}}", name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, out)
+}
+
 func (c *Client) Exec(name string, cmd ...string) error {
 	return c.r.Stream(append([]string{"exec", name}, cmd...)...)
 }
@@ -145,6 +161,27 @@ func (c *Client) ReadFile(name, path string) (string, error) {
 	return out, nil
 }
 
+// ReadFileIfExists tells the three outcomes of reading path inside the
+// container apart (D8a): present (content, true, nil), absent (`test -e`
+// exits non-zero: "", false, nil) and error (docker could not run, or `cat`
+// failed on a file that exists). A stopped container also reads as absent,
+// since `docker exec` then exits non-zero too; callers only ever skip a write
+// on absent, so that is the safe side. Content is trimmed, as ReadFile's is.
+func (c *Client) ReadFileIfExists(name, path string) (content string, present bool, err error) {
+	ok, err := c.r.Check("exec", name, "test", "-e", path)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	out, err := c.r.Output("exec", name, "cat", path)
+	if err != nil {
+		return "", true, err
+	}
+	return out, true, nil
+}
+
 const (
 	pullAttempts = 3
 	pullBackoff  = 3 * time.Second
@@ -175,6 +212,26 @@ func (c *Client) ImageExists(image string) (bool, error) {
 		return false, nil // `image inspect` fails when the image is absent
 	}
 	return true, nil
+}
+
+// ImageVolumes returns the VOLUME paths the image declares, sorted ("null",
+// i.e. no VOLUMEs, gives none). Used to warn about anonymous volumes whose
+// content `rm -v` discards (D3).
+func (c *Client) ImageVolumes(image string) ([]string, error) {
+	out, err := c.r.Output("image", "inspect", "-f", "{{json .Config.Volumes}}", image)
+	if err != nil {
+		return nil, err
+	}
+	var vols map[string]struct{}
+	if err := json.Unmarshal([]byte(out), &vols); err != nil {
+		return nil, fmt.Errorf("parsing the VOLUMEs of %s: %w", image, err)
+	}
+	paths := make([]string, 0, len(vols))
+	for p := range vols {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // EnsureNetwork creates the named user-defined bridge if it does not exist.

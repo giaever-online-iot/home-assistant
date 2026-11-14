@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -49,6 +50,8 @@ func TestWarnIngressMode(t *testing.T) {
 // T7: sync checks the mode before it writes, and only with a panel configured.
 // The ingress dir exists so this test still holds once the check moves into
 // PR #6's applyIngress, which checks only when the dir is there (D12).
+// W-13 D19: the restart is asserted on `sync --force`; a plain sync of an
+// unchanged file checks the mode the same way and does not restart.
 func TestIngressSyncChecksMode(t *testing.T) {
 	panels := map[string]config.IngressSpec{"zui": {URL: "http://localhost:8091", Title: "Z-Wave JS UI"}}
 	cases := []struct {
@@ -62,7 +65,7 @@ func TestIngressSyncChecksMode(t *testing.T) {
 	for _, tc := range cases {
 		f := haFake("2026.11.1", ingressDir)
 		f.outputs[keyStorage] = storageYAML
-		if err := runIngress(docker.NewWithRunner(f), config.Config{Ingress: tc.ingress}, []string{"sync"}); err != nil {
+		if err := runIngress(docker.NewWithRunner(f), config.Config{Ingress: tc.ingress}, []string{"sync", "--force"}, io.Discard, io.Discard); err != nil {
 			t.Errorf("%s: runIngress sync: %v", tc.name, err)
 			continue
 		}
@@ -76,6 +79,20 @@ func TestIngressSyncChecksMode(t *testing.T) {
 			t.Errorf("%s: the mode check ran after the write; calls %q", tc.name, f.calls)
 		}
 	}
+
+	cfg := config.Config{Ingress: panels}
+	f := haFake("2026.11.1", ingressDir)
+	f.outputs[keyStorage] = storageYAML
+	f.outputs["exec homeassistant cat "+ingressFilePath] = strings.TrimSpace(ingress.Render(ingress.MergedEntries(cfg)))
+	if err := runIngress(docker.NewWithRunner(f), cfg, []string{"sync"}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("no-force sync: %v", err)
+	}
+	if n := f.count(keyStorage); n != 1 {
+		t.Errorf("no-force sync: storage read %d times, want 1", n)
+	}
+	if n := f.count(keyRestart); n != 0 {
+		t.Errorf("no-force sync of an unchanged file: restart called %d times, want 0", n)
+	}
 }
 
 // indexOfCall is the index of the first recorded call starting with prefix, or -1.
@@ -88,7 +105,7 @@ func indexOfCall(calls []string, prefix string) int {
 	return -1
 }
 
-// T8: an unchanged auto-sync (ShouldSync says no) still checks the mode when
+// T8: an unchanged auto-sync (Decide says no write) still checks the mode when
 // hass_ingress is installed, and still neither writes nor restarts (D11, D12).
 func TestApplyIngressAutoSyncChecksMode(t *testing.T) {
 	cfg := config.Config{Ingress: map[string]config.IngressSpec{"zui": {URL: "http://localhost:8091", Title: "Z-Wave JS UI"}}}
@@ -108,7 +125,7 @@ func TestApplyIngressAutoSyncChecksMode(t *testing.T) {
 		f := haFake("2026.11.1", dirs...)
 		f.outputs[keyStorage] = storageUI
 		f.outputs["exec homeassistant cat "+ingressFilePath] = ingress.Render(ingress.MergedEntries(cfg))
-		if err := applyIngress(docker.NewWithRunner(f), cfg, false); err != nil {
+		if _, err := applyIngress(docker.NewWithRunner(f), cfg, false, io.Discard); err != nil {
 			t.Errorf("%s: applyIngress: %v", tc.name, err)
 			continue
 		}
