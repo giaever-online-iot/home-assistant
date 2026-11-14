@@ -69,8 +69,9 @@ func marketplaceGuidance(found string) string {
 
 // hacsGate reads the running HA's version from the config volume (the same
 // file get.hacs.xyz checks). 2026.11+ or unknown: guidance, do not proceed
-// (D1, D3). Older: proceed with the frozen notice.
-func hacsGate(c *docker.Client) (bool, string, error) {
+// (D1, D3). Older: proceed with the frozen notice. It ignores force: --force
+// never bypasses it (W-5 D5).
+func hacsGate(c *docker.Client, _ bool) (bool, string, error) {
 	raw, err := c.ReadFile(dockerargs.ContainerName, haVersionPath)
 	if err != nil {
 		return false, "", err

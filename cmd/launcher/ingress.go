@@ -52,6 +52,9 @@ func applyIngress(cli *docker.Client, cfg config.Config, force bool) error {
 		if err == nil && !installed {
 			fmt.Fprintln(os.Stderr, "warning: ingress panels are configured but hass_ingress is not installed — run `home-assistant.install hass-ingress`")
 		}
+		if err == nil && installed {
+			warnIngressMode(cli, os.Stderr)
+		}
 	}
 	if !force {
 		current, _ := cli.ReadFile(dockerargs.ContainerName, ingressFilePath)

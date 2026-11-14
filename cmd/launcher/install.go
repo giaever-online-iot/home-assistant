@@ -20,9 +20,10 @@ type Recipe struct {
 	Activation string // printed after a successful install (manual UI steps)
 	Installed  string // printed when Dest already exists (no --force)
 	Install    func(*docker.Client) error
-	// Gate, if set, runs after preflight and before the dir probe. proceed=false
-	// prints notice and exits 0 with nothing installed, whatever --force says.
-	Gate func(c *docker.Client) (proceed bool, notice string, err error)
+	// Gate, if set, runs after preflight and before the dir probe, and gets
+	// --force (D6). proceed=false prints notice and exits 0 with nothing
+	// installed; the gate alone decides what --force may override.
+	Gate func(c *docker.Client, force bool) (proceed bool, notice string, err error)
 }
 
 // installRegistry maps an install target to its recipe. Extend this to add more
@@ -47,27 +48,17 @@ var installRegistry = map[string]Recipe{
 		Name: "hass-ingress",
 		// The integration's dir (and HA domain) is `ingress`, not `hass_ingress`.
 		Dest: "/config/custom_components/ingress",
+		Gate: hassIngressGate,
 		Install: func(c *docker.Client) error {
-			// Fetch lovelylain/hass_ingress and copy its custom_components/ingress
-			// into /config from inside the running container. --strip-components=1
-			// avoids hard-coding the branch-named top dir; the test -d gives a clear
-			// error if the repo layout ever changes (instead of a cryptic cp stat).
-			return c.Exec(dockerargs.ContainerName, "bash", "-c",
-				"set -e; cd /tmp; "+
-					"wget -qO hi.tgz https://github.com/lovelylain/hass_ingress/archive/refs/heads/main.tar.gz; "+
-					"rm -rf hi-src; mkdir hi-src; "+
-					"tar xzf hi.tgz -C hi-src --strip-components=1; "+
-					"test -d hi-src/custom_components/ingress || { echo 'hass_ingress: custom_components/ingress not found (repo layout changed)'; exit 1; }; "+
-					"mkdir -p /config/custom_components; "+
-					"rm -rf /config/custom_components/ingress; "+
-					"cp -r hi-src/custom_components/ingress /config/custom_components/; "+
-					"rm -rf hi.tgz hi-src")
+			// The pinned release, verified in the container's /tmp before
+			// anything under /config changes (D1-D4).
+			return c.Exec(dockerargs.ContainerName, "bash", "-c", hassIngressScript("/config", "/tmp"))
 		},
-		Activation: "\nhass_ingress installed. Next:\n" +
+		Activation: "\nhass_ingress " + hassIngressPinVersion + " installed (pinned release, sha256 verified). Next:\n" +
 			"  1. Define panels:  snap set home-assistant ingress.<name>.url=http://localhost:<port> ingress.<name>.title=\"<Title>\"\n" +
 			"  2. Apply:          home-assistant.ingress sync\n" +
 			"Each panel then appears in the Home Assistant sidebar.\n",
-		Installed: `hass-ingress is already installed. This copy does not update itself: run "home-assistant.install hass-ingress --force" to refresh it from upstream.`,
+		Installed: `hass-ingress is already installed, but its version could not be read. Run "home-assistant.install hass-ingress --force" to replace it with the pinned ` + hassIngressPinVersion + `.`,
 	},
 }
 
@@ -129,7 +120,7 @@ func runInstall(cli *docker.Client, cfg config.Config, args []string, out io.Wri
 		return err
 	}
 	if recipe.Gate != nil {
-		proceed, notice, err := recipe.Gate(cli)
+		proceed, notice, err := recipe.Gate(cli, force)
 		if err != nil {
 			return err
 		}
