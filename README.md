@@ -38,3 +38,7 @@ Ports bind to 127.0.0.1 by default (reachable through the sidebar only); publish
 ### Firewall (ufw) on Ubuntu Core
 
 Reported behaviour, not reproduced in this repository: with the `ufw` snap enabled, ufw uses legacy iptables with a FORWARD policy of DROP, while docker's rules live in nf_tables. Packets have to pass both, so bridge add-ons lose outbound traffic and their published ports. Allow routed traffic with `sudo ufw default allow routed`, or more narrowly with `sudo ufw route allow in on br-<id>` and `sudo ufw route allow out on br-<id>`, where `<id>` is the first 12 characters of `docker network inspect ha-addons -f '{{.Id}}'`.
+
+Under model B, ufw's default `deny (incoming)` also blocks Home Assistant from reaching host services through `host.docker.internal`, because those packets arrive from the bridge subnet and pass ufw's INPUT chain. Seen on a Pi with ufw enabled: zwave-js-ui listened on `0.0.0.0:8091`, yet `http://host.docker.internal:8091` timed out from the Home Assistant container. Allow each host port that a rewritten panel or a re-pointed integration uses, from the bridge subnet only, e.g. `sudo ufw allow from 172.18.0.0/16 to any port 8091 proto tcp` (and `3000` for zwave_js). Find the subnet with `docker network inspect ha-addons -f '{{(index .IPAM.Config 0).Subnet}}'`.
+
+The `docker.network` warnings (and the per-panel rewrite lines) are printed by the daemon, so read them with `snap logs home-assistant.daemon`; `snap set` itself does not show them.
