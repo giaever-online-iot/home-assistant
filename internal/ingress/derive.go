@@ -59,14 +59,39 @@ func MergedEntries(c config.Config) map[string]config.IngressSpec {
 	return m
 }
 
-// ShouldSync decides whether reconcile's auto-sync must (re)write the ingress
-// file and restart HA. current is the file's present content ("" when absent
-// — and note docker's ReadFile trims whitespace, hence trimmed comparison).
-// A fresh install with no panels must stay untouched: no write, no include
-// line, no restart.
-func ShouldSync(current, rendered string, panels int) bool {
-	if panels == 0 && strings.TrimSpace(current) == "" {
-		return false
+// Decide says whether reconcile must (re)write the ingress file and whether
+// HA must restart for it (D6). current is the file's present content ("" when
+// absent; docker's ReadFile trims it, hence the trimmed comparison).
+//   - no panels and no file (fresh install): neither, so no include line and
+//     no restart either;
+//   - trimmed content equal: neither;
+//   - equal once the `#` comment lines are dropped (a header-only change, as
+//     between snap revisions): write, no restart;
+//   - anything else: both.
+//
+// Render quotes every value, so a `#` only ever starts a comment line.
+func Decide(current, rendered string, panels int) (write, restart bool) {
+	cur, ren := strings.TrimSpace(current), strings.TrimSpace(rendered)
+	if panels == 0 && cur == "" {
+		return false, false
 	}
-	return strings.TrimSpace(current) != strings.TrimSpace(rendered)
+	if cur == ren {
+		return false, false
+	}
+	if withoutComments(cur) == withoutComments(ren) {
+		return true, false
+	}
+	return true, true
+}
+
+// withoutComments drops the lines whose first non-blank character is `#`.
+func withoutComments(s string) string {
+	var keep []string
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			continue
+		}
+		keep = append(keep, ln)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }

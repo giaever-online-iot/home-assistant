@@ -60,7 +60,7 @@ func applyIngress(cli *docker.Client, cfg config.Config, force bool) error {
 	}
 	if !force {
 		current, _ := cli.ReadFile(dockerargs.ContainerName, ingressFilePath)
-		if !ingress.ShouldSync(current, body, len(entries)) {
+		if write, _ := ingress.Decide(current, body, len(entries)); !write {
 			return nil
 		}
 	}

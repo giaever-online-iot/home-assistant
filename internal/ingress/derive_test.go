@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/giaever-online-iot/home-assistant/internal/config"
@@ -78,21 +79,34 @@ func TestMergedEntries(t *testing.T) {
 	}
 }
 
-func TestShouldSync(t *testing.T) {
+// T8 (D6, replaces TestShouldSync per D19): write and restart only when the
+// YAML changes meaning; a comment-only change is written without a restart.
+func TestDecide(t *testing.T) {
+	const (
+		oldHdr = "# Managed by the home-assistant snap (old wording).\n"
+		newHdr = "# Managed by the home-assistant snap — new wording.\n# Second header line.\n"
+		body   = "nodered:\n  url: \"http://127.0.0.1:1880\"\n"
+	)
 	cases := []struct {
+		name              string
 		current, rendered string
 		panels            int
-		want              bool
+		write, restart    bool
 	}{
-		{"", "{}", 0, false},                 // nothing wanted, nothing there: fresh install stays untouched
-		{"", "nodered:\n", 1, true},          // first panel
-		{"nodered:", "nodered:\n", 1, false}, // ReadFile trims; trimmed-equal = no restart
-		{"old:", "new:\n", 1, true},          // changed
-		{"old:", "{}\n", 0, true},            // last panel removed → write the empty map
+		{"fresh install: no panels, no file", "", newHdr + "{}\n", 0, false, false},
+		{"first panel", "", newHdr + body, 1, true, true},
+		{"trimmed-equal (ReadFile trims)", strings.TrimSpace(newHdr + body), newHdr + body, 1, false, false},
+		{"whitespace at the ends only", "\n\n" + newHdr + body + "\n  \n", newHdr + body, 1, false, false},
+		{"header-only change", oldHdr + body, newHdr + body, 1, true, false},
+		{"header added to a headerless file", body, newHdr + body, 1, true, false},
+		{"panel changed", newHdr + "old:\n  url: \"http://x\"\n", newHdr + body, 1, true, true},
+		{"last panel removed", newHdr + body, newHdr + "{}\n", 0, true, true},
+		{"header change on the empty map", oldHdr + "{}", newHdr + "{}\n", 0, true, false},
 	}
-	for i, c := range cases {
-		if got := ShouldSync(c.current, c.rendered, c.panels); got != c.want {
-			t.Errorf("case %d: ShouldSync = %v, want %v", i, got, c.want)
+	for _, tc := range cases {
+		write, restart := Decide(tc.current, tc.rendered, tc.panels)
+		if write != tc.write || restart != tc.restart {
+			t.Errorf("%s: Decide = (write %v, restart %v), want (%v, %v)", tc.name, write, restart, tc.write, tc.restart)
 		}
 	}
 }

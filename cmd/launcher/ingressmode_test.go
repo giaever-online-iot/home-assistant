@@ -88,7 +88,7 @@ func indexOfCall(calls []string, prefix string) int {
 	return -1
 }
 
-// T8: an unchanged auto-sync (ShouldSync says no) still checks the mode when
+// T8: an unchanged auto-sync (Decide says no write) still checks the mode when
 // hass_ingress is installed, and still neither writes nor restarts (D11, D12).
 func TestApplyIngressAutoSyncChecksMode(t *testing.T) {
 	cfg := config.Config{Ingress: map[string]config.IngressSpec{"zui": {URL: "http://localhost:8091", Title: "Z-Wave JS UI"}}}
