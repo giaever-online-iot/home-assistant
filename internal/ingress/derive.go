@@ -50,10 +50,18 @@ func DeriveEntries(addons map[string]config.AddonSpec, network string) map[strin
 
 // MergedEntries is the full panel map: derived add-on panels plus explicit
 // ingress.* entries. Collisions are rejected at validate; if one slips
-// through anyway the explicit entry wins (deterministic).
+// through anyway the explicit entry wins (deterministic). Under model B an
+// explicit loopback URL is rendered with the host's name, since HA's own
+// localhost is its container there (D11); snap config is left as it is, so
+// switching back to model A restores the original URL.
 func MergedEntries(c config.Config) map[string]config.IngressSpec {
 	m := DeriveEntries(c.Addons, c.Network)
 	for k, v := range c.Ingress {
+		if c.Network == dockerargs.AddonNetwork {
+			if u, ok := config.LoopbackToHostGateway(v.URL); ok {
+				v.URL = u
+			}
+		}
 		m[k] = v
 	}
 	return m

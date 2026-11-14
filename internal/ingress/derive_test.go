@@ -110,3 +110,29 @@ func TestDecide(t *testing.T) {
 		}
 	}
 }
+
+// T12 (D11): under model B, explicit loopback panels render with the host's
+// name; model A and derived add-on panels are untouched.
+func TestMergedEntriesModelBLoopback(t *testing.T) {
+	const body = `"ingress":{
+		"zwave":{"url":"http://localhost:8091"},
+		"lan":{"url":"http://localhost.example:80"}
+	},"addons":{"nodered":{"image":"i","ports":{"ui":"8080:1880"},"ingress":{"title":"Node-RED"}}}`
+	b := MergedEntries(parse(t, `{"docker":{"network":"ha-addons"},`+body+`}`))
+	if got := b["zwave"].URL; got != "http://host.docker.internal:8091" {
+		t.Errorf("model B zwave URL = %q, want http://host.docker.internal:8091", got)
+	}
+	if got := b["lan"].URL; got != "http://localhost.example:80" {
+		t.Errorf("model B lan URL = %q, want it unchanged", got)
+	}
+	if got := b["nodered"].URL; got != "http://ha-addon-nodered:1880" {
+		t.Errorf("model B derived URL = %q, want the container-name form", got)
+	}
+	a := MergedEntries(parse(t, `{`+body+`}`))
+	if got := a["zwave"].URL; got != "http://localhost:8091" {
+		t.Errorf("model A zwave URL = %q, want it unchanged", got)
+	}
+	if got := a["nodered"].URL; got != "http://127.0.0.1:8080" {
+		t.Errorf("model A derived URL = %q", got)
+	}
+}
