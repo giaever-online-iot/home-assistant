@@ -39,7 +39,7 @@ func TestDeriveEntriesModelA(t *testing.T) {
 
 func TestDeriveEntriesModelAExplicitBindIP(t *testing.T) {
 	c := parse(t, `{"addons":{
-		"nodered":{"image":"i","ports":{"ui":"192.168.1.5:8080:80"},"ingress":{}}
+		"nodered":{"image":"i","ports":{"ui":"192.168.1.5:8080:80"},"ingress":{"title":"Node-RED"}}
 	}}`)
 	e := DeriveEntries(c.Addons, c.Network)["nodered"]
 	if e.URL != "http://192.168.1.5:8080" { // bound to a specific ip: only that ip is reachable
@@ -47,7 +47,7 @@ func TestDeriveEntriesModelAExplicitBindIP(t *testing.T) {
 	}
 
 	c = parse(t, `{"addons":{
-		"mqtt":{"image":"i","ports":{"ui":"0.0.0.0:1883:1883"},"ingress":{}}
+		"mqtt":{"image":"i","ports":{"ui":"0.0.0.0:1883:1883"},"ingress":{"title":"MQTT"}}
 	}}`)
 	e = DeriveEntries(c.Addons, c.Network)["mqtt"]
 	if e.URL != "http://127.0.0.1:1883" { // 0.0.0.0 is reachable via loopback too
@@ -71,7 +71,7 @@ func TestDeriveEntriesModelB(t *testing.T) {
 func TestMergedEntries(t *testing.T) {
 	c := parse(t, `{
 		"ingress":{"zwave":{"url":"http://localhost:8091","title":"Z-Wave"}},
-		"addons":{"nodered":{"image":"i","ports":{"ui":1880},"ingress":{}}}
+		"addons":{"nodered":{"image":"i","ports":{"ui":1880},"ingress":{"title":"Node-RED"}}}
 	}`)
 	got := MergedEntries(c)
 	if len(got) != 2 || got["zwave"].URL != "http://localhost:8091" || got["nodered"].URL == "" {

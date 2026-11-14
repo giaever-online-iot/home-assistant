@@ -70,7 +70,11 @@ const (
 func Parse(data []byte) (Config, error) {
 	var raw rawConfig
 	if len(data) > 0 {
-		if err := json.Unmarshal(data, &raw); err != nil {
+		pruned, err := withoutEmptyObjects(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("parsing snap config: %w", err)
+		}
+		if err := json.Unmarshal(pruned, &raw); err != nil {
 			return Config{}, fmt.Errorf("parsing snap config: %w", err)
 		}
 	}

@@ -110,15 +110,15 @@ func TestIngressPortSpecErrors(t *testing.T) {
 
 func TestValidateAddonsRejectsBadInputs(t *testing.T) {
 	bad := []string{
-		`{"addons":{"x":{}}}`, // missing image
-		`{"addons":{"x":{"image":"img","ports":{"ui":"abc"}}}}`,                                                // bad port
-		`{"addons":{"x":{"image":"img","data-dir":"relative"}}}`,                                               // relative data-dir
-		`{"addons":{"x":{"image":"img","volumes":{"v":"/just-a-path"}}}}`,                                      // volume without :
-		`{"addons":{"x":{"image":"img","devices":{"z":"/dev/ttyACM0"}}}}`,                                      // devices reserved
-		`{"addons":{"Bad_Name":{"image":"img"}}}`,                                                              // invalid name
-		`{"addons":{"x":{"image":"img","ingress":{"title":"X"}}}}`,                                             // panel with no ports
-		`{"addons":{"x":{"image":"img","ports":{"a":"1","b":"2"},"ingress":{}}}}`,                              // ambiguous panel port
-		`{"addons":{"x":{"image":"img","ports":{"ui":"80"},"ingress":{}}},"ingress":{"x":{"url":"http://y"}}}`, // name collision
+		`{"addons":{"x":{"ports":{"ui":80}}}}`,                                                                            // missing image (an empty addons.x is no add-on, D14)
+		`{"addons":{"x":{"image":"img","ports":{"ui":"abc"}}}}`,                                                           // bad port
+		`{"addons":{"x":{"image":"img","data-dir":"relative"}}}`,                                                          // relative data-dir
+		`{"addons":{"x":{"image":"img","volumes":{"v":"/just-a-path"}}}}`,                                                 // volume without :
+		`{"addons":{"x":{"image":"img","devices":{"z":"/dev/ttyACM0"}}}}`,                                                 // devices reserved
+		`{"addons":{"Bad_Name":{"image":"img"}}}`,                                                                         // invalid name
+		`{"addons":{"x":{"image":"img","ingress":{"title":"X"}}}}`,                                                        // panel with no ports
+		`{"addons":{"x":{"image":"img","ports":{"a":"1","b":"2"},"ingress":{"title":"X"}}}}`,                              // ambiguous panel port
+		`{"addons":{"x":{"image":"img","ports":{"ui":"80"},"ingress":{"title":"X"}}},"ingress":{"x":{"url":"http://y"}}}`, // name collision
 	}
 	for _, in := range bad {
 		c, err := Parse([]byte(in))
@@ -166,5 +166,58 @@ func TestValidateAddonsAcceptsGood(t *testing.T) {
 	c, _ := Parse([]byte(in))
 	if _, err := c.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// T13 (D14): an empty object is absent, at every level and recursively.
+func TestParseEmptyObjectsAreAbsent(t *testing.T) {
+	cases := []struct {
+		name, in string
+		check    func(Config) bool
+	}{
+		{"empty add-on", `{"addons":{"x":{}}}`, func(c Config) bool { return c.Addons == nil }},
+		{"empty add-on panel", `{"addons":{"x":{"image":"i","ports":{"ui":1},"ingress":{}}}}`,
+			func(c Config) bool { return c.Addons["x"].Image == "i" && c.Addons["x"].Ingress == nil }},
+		{"empty explicit panel", `{"ingress":{"z":{}}}`, func(c Config) bool { return c.Ingress == nil }},
+		{"recursively empty add-on", `{"addons":{"x":{"ports":{},"ingress":{}}}}`, func(c Config) bool { return c.Addons == nil }},
+		{"empty docker maps", `{"docker":{"devices":{},"volumes":{},"environment":{}},"addons":{"x":{"image":"i","volumes":{},"environment":{},"devices":{}}}}`,
+			func(c Config) bool {
+				a := c.Addons["x"]
+				return c.Devices == nil && c.Volumes == nil && c.Environment == nil && a.Volumes == nil && a.Environment == nil && a.Devices == nil
+			}},
+		{"false and empty strings are values", `{"docker":{"privileged":false,"timezone":""},"addons":{"x":{"image":"i","ports":{"ui":1},"ingress":{"require-admin":false}}}}`,
+			func(c Config) bool { return !c.Privileged && c.Addons["x"].Ingress != nil }},
+	}
+	for _, tc := range cases {
+		c, err := Parse([]byte(tc.in))
+		if err != nil {
+			t.Errorf("%s: Parse: %v", tc.name, err)
+			continue
+		}
+		if !tc.check(c) {
+			t.Errorf("%s: parsed %+v", tc.name, c)
+		}
+		if _, err := c.Validate(); err != nil {
+			t.Errorf("%s: Validate: %v", tc.name, err)
+		}
+	}
+}
+
+// Numbers survive the empty-object pass unchanged (snapctl emits ports
+// unquoted).
+func TestParseKeepsNumbers(t *testing.T) {
+	c, err := Parse([]byte(`{"addons":{"x":{"image":"i","ports":{"ui":1880,"big":65535}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.Addons["x"].Ports; p["ui"] != "1880" || p["big"] != "65535" {
+		t.Errorf("ports = %v", p)
+	}
+}
+
+// The empty-object pass must not loosen parsing: trailing data stays an error.
+func TestParseRejectsTrailingData(t *testing.T) {
+	if _, err := Parse([]byte(`{"docker":{}} x`)); err == nil {
+		t.Error("trailing data after the document must be an error")
 	}
 }
