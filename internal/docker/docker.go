@@ -107,7 +107,7 @@ func (c *Client) ImageDigest(name string) (string, error) {
 }
 
 func (c *Client) Pull(image string) error  { return c.pull(image, pullAttempts, pullBackoff) }
-func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", name) }
+func (c *Client) Remove(name string) error { return c.r.Stream("rm", "-f", "-v", name) }
 func (c *Client) Start(name string) error  { return c.r.Stream("start", name) }
 func (c *Client) Stop(name string) error   { return c.r.Stream("stop", name) }
 func (c *Client) FollowLogs(name string) error {

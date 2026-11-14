@@ -205,3 +205,15 @@ func TestListByLabel(t *testing.T) {
 		t.Errorf("empty: %v, %v", got, err)
 	}
 }
+
+// T1: rm -v drops the container's anonymous volumes (D2); named volumes and
+// bind mounts are never touched by -v.
+func TestRemoveDeletesAnonymousVolumes(t *testing.T) {
+	f := &fakeRunner{}
+	if err := NewWithRunner(f).Remove("ha-addon-mqtt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || strings.Join(f.calls[0], " ") != "rm -f -v ha-addon-mqtt" {
+		t.Errorf("Remove called %q, want exactly [rm -f -v ha-addon-mqtt]", f.calls)
+	}
+}
